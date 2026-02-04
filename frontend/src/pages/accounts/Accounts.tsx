@@ -491,7 +491,7 @@ export function Accounts() {
       const currentSettings = await getAIReplySettings(account.id)
       await updateAIReplySettings(account.id, {
         ...currentSettings,
-        enabled: newEnabled,
+        ai_enabled: newEnabled,  // 直接使用 ai_enabled 字段
       })
       setAccounts(prev => prev.map(a =>
         a.id === account.id ? { ...a, aiEnabled: newEnabled } : a,

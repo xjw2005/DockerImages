@@ -417,8 +417,8 @@ export function Settings() {
                     placeholder="选择账号"
                   />
                 </div>
-                <button 
-                  onClick={handleTestAI} 
+                <button
+                  onClick={handleTestAI}
                   className="btn-ios-secondary"
                   disabled={testingAI || !testAccountId}
                 >
