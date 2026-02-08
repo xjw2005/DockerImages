@@ -1948,14 +1948,53 @@ class XianyuSliderStealth:
     def calculate_slide_distance(self, slider_button: ElementHandle, slider_track: ElementHandle):
         """计算滑动距离 - 增强精度，支持刮刮乐"""
         try:
-            # 获取滑块按钮位置和大小
-            button_box = slider_button.bounding_box()
+            # 确保元素可见并重试获取位置
+            button_box = None
+            track_box = None
+            
+            for _ in range(3):
+                try:
+                    if slider_button.is_visible():
+                        button_box = slider_button.bounding_box()
+                    if slider_track.is_visible():
+                        track_box = slider_track.bounding_box()
+                    
+                    if button_box and track_box:
+                        break
+                    time.sleep(0.2)
+                except Exception:
+                    pass
+
+            # 如果常规方法失败，尝试强制JS获取
+            if not button_box or not track_box:
+                logger.warning(f"【{self.pure_user_id}】常规方法获取位置失败，尝试JS强制获取")
+                try:
+                    # 获取元素所在的frame或page上下文
+                    context = slider_button.owner_frame if hasattr(slider_button, 'owner_frame') else self.page
+                    if not context: # 如果是ElementHandle但没有owner_frame属性(新版playwright可能不同)，尝试使用page
+                         context = self.page
+
+                    js_rect = await context.evaluate("""(elements) => {
+                        const [btn, track] = elements;
+                        const btnRect = btn.getBoundingClientRect();
+                        const trackRect = track.getBoundingClientRect();
+                        return {
+                            btn: {x: btnRect.x, y: btnRect.y, width: btnRect.width, height: btnRect.height},
+                            track: {x: trackRect.x, y: trackRect.y, width: trackRect.width, height: trackRect.height}
+                        };
+                    }""", [slider_button, slider_track])
+                    
+                    if js_rect:
+                        button_box = js_rect['btn']
+                        track_box = js_rect['track']
+                        logger.info(f"【{self.pure_user_id}】JS强制获取位置成功")
+                except Exception as e:
+                    logger.error(f"【{self.pure_user_id}】JS强制获取位置也失败: {e}")
+
             if not button_box:
                 logger.error(f"【{self.pure_user_id}】无法获取滑块按钮位置")
                 return 0
             
-            # 获取滑块轨道位置和大小
-            track_box = slider_track.bounding_box()
             if not track_box:
                 logger.error(f"【{self.pure_user_id}】无法获取滑块轨道位置")
                 return 0
@@ -1965,10 +2004,14 @@ class XianyuSliderStealth:
             
             # 🔑 关键优化1：使用JavaScript获取更精确的尺寸（避免DPI缩放影响）
             try:
-                precise_distance = self.page.evaluate("""
+                # 确定执行上下文
+                context = slider_button.owner_frame if hasattr(slider_button, 'owner_frame') else self.page
+                if not context: context = self.page
+
+                precise_distance = await context.evaluate("""
                     () => {
-                        const button = document.querySelector('#nc_1_n1z') || document.querySelector('.nc_iconfont');
-                        const track = document.querySelector('#nc_1_n1t') || document.querySelector('.nc_scale');
+                        const button = document.querySelector('#nc_1_n1z') || document.querySelector('.nc_iconfont') || document.querySelector('[id*="nc_1_n1z"]');
+                        const track = document.querySelector('#nc_1_n1t') || document.querySelector('.nc_scale') || document.querySelector('[id*="nc_1_n1t"]');
                         if (button && track) {
                             const buttonRect = button.getBoundingClientRect();
                             const trackRect = track.getBoundingClientRect();

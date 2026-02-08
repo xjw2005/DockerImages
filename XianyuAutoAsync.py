@@ -4705,8 +4705,14 @@ class XianyuLive:
                             self.confirmed_orders[order_id] = current_time
                             logger.info(f"🎉 自动确认发货成功！订单ID: {order_id}")
                         else:
-                            logger.warning(f"⚠️ 自动确认发货失败: {confirm_result.get('error', '未知错误')}")
-                            # 即使确认发货失败，也继续发送发货内容
+                            error_msg = confirm_result.get('error', '未知错误')
+                            logger.warning(f"⚠️ 自动确认发货失败: {error_msg}")
+                            
+                            # 如果订单状态不正确（如已退款），停止发送发货内容
+                            if 'ORDER_STATUS_ERROR' in error_msg:
+                                logger.warning(f"⛔ 订单状态不正确（可能已退款/关闭），停止发送发货内容: {order_id}")
+                                return None
+                            # 其他错误继续尝试发送内容
 
             # 检查是否存在订单ID，只有存在订单ID才处理发货内容
             if order_id:
@@ -5628,7 +5634,14 @@ class XianyuLive:
                                         order_id=order_id,
                                         send_user_id=buyer_id
                                     )
-                                    logger.info(f"【{self.cookie_id}】订单 {order_id} 自动发货完成")
+                                    
+                                    # 只有当_auto_delivery成功返回（或处理完毕）后，才标记为已发货
+                                    # 注意：如果是订单状态错误等情况返回了，虽然没有发货，但也应该跳过避免重复报错
+                                    # 实际的发货成功标记（self.delivery_sent_orders.add）目前在_auto_delivery内部并没有做
+                                    # 建议：如果是成功的发货，应该在这里记录
+                                    self.delivery_sent_orders.add(order_id)
+                                    
+                                    logger.info(f"【{self.cookie_id}】订单 {order_id} 自动发货流程结束")
                                 except Exception as e:
                                     logger.error(f"【{self.cookie_id}】订单 {order_id} 自动发货失败: {self._safe_str(e)}")
                                     import traceback
