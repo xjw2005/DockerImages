@@ -3004,14 +3004,37 @@ class XianyuLive:
     def extract_item_id_from_message(self, message):
         """从消息中提取商品ID的辅助方法"""
         try:
-            # 方法1: 从message["1"]中提取（如果是字符串格式）
+            def _extract_item_id_from_url(url_text: str):
+                if not isinstance(url_text, str) or not url_text:
+                    return None
+                # 优先匹配 itemId 参数
+                m = re.search(r'[?&]itemId=(\d{10,})', url_text)
+                if m:
+                    return m.group(1)
+                # 兼容 fleamarket://item?id=xxx 形式
+                m = re.search(r'item\?id=(\d{10,})', url_text)
+                if m:
+                    return m.group(1)
+                return None
+
+            # 方法1: 优先从 reminderUrl 提取（最可靠）
+            # 场景A: 标准聊天消息结构 message["1"]["10"]["reminderUrl"]
             message_1 = message.get('1')
-            if isinstance(message_1, str):
-                # 尝试从字符串中提取数字ID
-                id_match = re.search(r'(\d{10,})', message_1)
-                if id_match:
-                    logger.info(f"从message[1]字符串中提取商品ID: {id_match.group(1)}")
-                    return id_match.group(1)
+            if isinstance(message_1, dict):
+                message_10 = message_1.get('10')
+                if isinstance(message_10, dict):
+                    item_id = _extract_item_id_from_url(message_10.get('reminderUrl', ''))
+                    if item_id:
+                        logger.info(f"从message[1][10].reminderUrl提取商品ID: {item_id}")
+                        return item_id
+
+            # 场景B: 非聊天消息结构 message["4"]["reminderUrl"]
+            message_4 = message.get('4')
+            if isinstance(message_4, dict):
+                item_id = _extract_item_id_from_url(message_4.get('reminderUrl', ''))
+                if item_id:
+                    logger.info(f"从message[4].reminderUrl提取商品ID: {item_id}")
+                    return item_id
 
             # 方法2: 从message["3"]中提取
             message_3 = message.get('3', {})
@@ -3046,12 +3069,30 @@ class XianyuLive:
                 # 从消息内容中提取数字ID
                 content = message_3.get('content', '')
                 if isinstance(content, str) and content:
+                    # 优先从URL语义提取
+                    item_id = _extract_item_id_from_url(content)
+                    if item_id:
+                        logger.info(f"【{self.cookie_id}】从消息内容URL中提取商品ID: {item_id}")
+                        return item_id
+
                     id_match = re.search(r'(\d{10,})', content)
                     if id_match:
                         logger.info(f"【{self.cookie_id}】从消息内容中提取商品ID: {id_match.group(1)}")
                         return id_match.group(1)
 
-            # 方法3: 遍历整个消息结构查找可能的商品ID
+            # 方法3: 从message["1"]字符串中提取（低优先级，避免误把PNM当商品ID）
+            if isinstance(message_1, str):
+                msg1 = message_1.strip()
+                # 排除明显非商品ID载体
+                if '.PNM' in msg1 or '@goofish' in msg1:
+                    pass
+                else:
+                    id_match = re.search(r'(\d{10,})', msg1)
+                    if id_match:
+                        logger.info(f"从message[1]字符串中提取商品ID: {id_match.group(1)}")
+                        return id_match.group(1)
+
+            # 方法4: 遍历整个消息结构查找可能的商品ID
             def find_item_id_recursive(obj, path=""):
                 if isinstance(obj, dict):
                     # 直接查找itemId字段
@@ -3069,6 +3110,16 @@ class XianyuLive:
                             return result
 
                 elif isinstance(obj, str):
+                    # 排除明显非商品ID载体
+                    if '.PNM' in obj or '@goofish' in obj:
+                        return None
+
+                    # 优先从URL语义提取 itemId
+                    item_id = _extract_item_id_from_url(obj)
+                    if item_id:
+                        logger.info(f"从{path} URL中提取商品ID: {item_id}")
+                        return item_id
+
                     # 从字符串中提取可能的商品ID
                     id_match = re.search(r'(\d{10,})', obj)
                     if id_match:
@@ -7653,6 +7704,91 @@ class XianyuLive:
             # 判断是否为聊天消息
             if not self.is_chat_message(message):
                 logger.warning("非聊天消息")
+
+                # 非聊天系统消息也可能是自动发货触发（如: 等待卖家发货）
+                try:
+                    non_chat_chat_id = None
+                    non_chat_send_user_id = user_id if user_id else "unknown_user"
+                    non_chat_send_user_name = "系统消息"
+
+                    def _parse_chat_id(raw_value):
+                        if raw_value is None:
+                            return None
+                        raw_str = str(raw_value).strip()
+                        if not raw_str:
+                            return None
+                        if '@' in raw_str:
+                            return raw_str.split('@')[0]
+                        return raw_str
+
+                    message_1 = message.get("1")
+                    if isinstance(message_1, str) and '@' in message_1:
+                        non_chat_chat_id = message_1.split('@')[0]
+                    elif isinstance(message_1, dict):
+                        chat_id_raw = message_1.get("2", "")
+                        non_chat_chat_id = chat_id_raw.split('@')[0] if '@' in str(chat_id_raw) else str(chat_id_raw)
+
+                        message_10 = message_1.get("10")
+                        if isinstance(message_10, dict):
+                            non_chat_send_user_id = message_10.get("senderUserId", non_chat_send_user_id)
+                            non_chat_send_user_name = message_10.get("senderNick", message_10.get("reminderTitle", "系统消息"))
+
+                    # 补充提取：非聊天包常见 chat_id 在 message['2'] / message['3'] / message['4']
+                    if not non_chat_chat_id:
+                        for key in ("2", "3", "4"):
+                            candidate_chat_id = _parse_chat_id(message.get(key))
+                            if candidate_chat_id and candidate_chat_id != "0" and candidate_chat_id != "1":
+                                # chat_id通常较长，避免把短整型状态位误识别为chat_id
+                                if len(candidate_chat_id) >= 8:
+                                    non_chat_chat_id = candidate_chat_id
+                                    break
+
+                    # 收集可能的触发文本
+                    candidates = []
+                    if isinstance(message.get("3"), dict):
+                        red_reminder_3 = message["3"].get("redReminder", "")
+                        if isinstance(red_reminder_3, str) and red_reminder_3:
+                            candidates.append(red_reminder_3)
+
+                    if isinstance(message.get("4"), dict):
+                        for key in ("reminderContent", "detailNotice", "redReminder", "reminderTitle"):
+                            value = message["4"].get(key, "")
+                            if isinstance(value, str) and value:
+                                candidates.append(value)
+
+                    if isinstance(message_1, dict) and isinstance(message_1.get("10"), dict):
+                        for key in ("reminderContent", "detailNotice", "redReminder", "reminderTitle"):
+                            value = message_1["10"].get(key, "")
+                            if isinstance(value, str) and value:
+                                candidates.append(value)
+
+                    trigger_text = None
+                    for text in candidates:
+                        # redReminder 常见值“等待卖家发货”映射为自动发货触发语义
+                        mapped_text = '[我已付款，等待你发货]' if text == '等待卖家发货' else text
+                        if self._is_auto_delivery_trigger(text) or self._is_auto_delivery_trigger(mapped_text):
+                            trigger_text = mapped_text
+                            break
+
+                    if trigger_text:
+                        if not order_id:
+                            logger.warning(f"【{self.cookie_id}】非聊天触发消息命中自动发货，但未提取到订单ID，跳过触发")
+                        elif not non_chat_chat_id:
+                            logger.warning(f"【{self.cookie_id}】非聊天触发消息命中自动发货，但未提取到chat_id，跳过触发")
+                        else:
+                            logger.info(f"[{msg_time}] 【{self.cookie_id}】非聊天系统消息触发自动发货: {trigger_text}")
+                            await self._handle_auto_delivery(
+                                websocket,
+                                message,
+                                non_chat_send_user_name,
+                                non_chat_send_user_id,
+                                item_id,
+                                non_chat_chat_id,
+                                msg_time
+                            )
+                except Exception as non_chat_e:
+                    logger.error(f"【{self.cookie_id}】处理非聊天自动发货触发异常: {self._safe_str(non_chat_e)}")
+
                 return
 
             # 处理聊天消息
