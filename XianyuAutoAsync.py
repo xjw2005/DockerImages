@@ -2129,7 +2129,7 @@ class XianyuLive:
             password = account_info.get('password', '')
             # show_browser = account_info.get('show_browser', False)  # 如果需要显示浏览器，请取消注释这行并确保在配置文件中正确设置
             # 显示浏览器（设置。headless设置>>>密码登录刷新 Cookie”流程的开关）
-            show_browser = False
+            show_browser = True
             
             # 检查是否配置了用户名和密码
             if not username or not password:
