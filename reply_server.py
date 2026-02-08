@@ -93,6 +93,8 @@ async def _send_notifications_directly(notifications, message: str, attachment_p
     import os
 
     logger.info(f"开始直接发送通知给账号 {account_id}")
+    logger.info(f"📋 收到的通知配置数量: {len(notifications) if notifications else 0}")
+    logger.info(f"📋 通知配置内容: {notifications}")
 
     # 从系统设置获取通知收件邮箱
     from db_manager import db_manager
@@ -102,13 +104,21 @@ async def _send_notifications_directly(notifications, message: str, attachment_p
         logger.warning("未设置通知收件邮箱，请在系统设置中配置")
         return
 
-    for notification in notifications:
-        try:
-            if not notification.get('enabled', True):
-                continue
+    logger.info(f"📧 收件邮箱: {recipient_email}")
 
-            channel_type = notification.get('channel_type')
-            channel_config = notification.get('channel_config')
+    for idx, notification in enumerate(notifications):
+        logger.info(f"📧 开始处理第 {idx+1} 个通知配置")
+        try:
+            #无论如何都要发送。
+            # if not notification.get('enabled', True):
+            #     continue
+
+            # 兼容两种字段命名：账号通知格式 和 全局通知格式
+            channel_type = notification.get('channel_type') or notification.get('type')
+            channel_config = notification.get('channel_config') or notification.get('config')
+            channel_name = notification.get('channel_name') or notification.get('name', 'Unknown')
+
+            logger.info(f"📧 处理通知渠道: 名称={channel_name}, 类型={channel_type}, 配置={channel_config}")
 
             # 解析配置数据（JSON字符串转字典）
             if isinstance(channel_config, str):
@@ -117,17 +127,24 @@ async def _send_notifications_directly(notifications, message: str, attachment_p
             else:
                 config_data = channel_config
 
+            logger.info(f"📧 解析后配置: {config_data}")
+
             if channel_type == 'email':
                 # 使用系统设置中的收件邮箱
                 config_data['recipient_email'] = recipient_email
                 logger.info(f"使用系统设置中的收件邮箱: {recipient_email}")
+                logger.info(f"📧 准备发送邮件，收件人: {recipient_email}")
                 # 发送邮件通知
                 await _send_email_direct(config_data, message, attachment_path)
+                logger.info(f"✅ 邮件发送完成")
             else:
                 logger.warning(f"暂不支持的通知类型: {channel_type}")
 
         except Exception as e:
-            logger.error(f"发送通知失败 ({notification.get('channel_name', 'Unknown')}): {str(e)}")
+            channel_name = notification.get('channel_name') or notification.get('name', 'Unknown')
+            logger.error(f"发送通知失败 ({channel_name}): {str(e)}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
 
 
 async def _send_email_direct(config_data: dict, message: str, attachment_path: str = None):
@@ -144,6 +161,8 @@ async def _send_email_direct(config_data: dict, message: str, attachment_path: s
     from email.mime.image import MIMEImage
     import os
 
+    logger.info(f"📬 进入邮件发送函数，配置: {config_data.get('smtp_server', 'N/A')}")
+
     try:
         # 解析配置
         smtp_server = config_data.get('smtp_server', '')
@@ -152,6 +171,8 @@ async def _send_email_direct(config_data: dict, message: str, attachment_path: s
         email_password = config_data.get('email_password', '')
         recipient_email = config_data.get('recipient_email', '')
         smtp_use_tls = config_data.get('smtp_use_tls', smtp_port == 587)
+
+        logger.info(f"📬 邮件配置解析完成: 服务器={smtp_server}, 端口={smtp_port}, 发件人={email_user}, 收件人={recipient_email}")
 
         if not all([smtp_server, email_user, email_password, recipient_email]):
             logger.warning("邮件通知配置不完整")
@@ -1801,13 +1822,14 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                                 finally:
                                     new_loop.close()
                             else:
-                                # 如果账号实例不存在，直接从数据库获取配置并发送通知
-                                log_with_user('warning', f"账号实例不存在: {account_id}，尝试从数据库获取配置并发送通知", current_user)
+                                # 如果账号实例不存在，直接使用全局通知渠道发送通知
+                                log_with_user('info', f"账号实例不存在，使用全局通知渠道发送人脸验证通知: {account_id}", current_user)
                                 try:
-                                    # 尝试从数据库获取通知配置
-                                    notifications = db_manager.get_account_notifications(account_id)
+                                    # 直接获取全局通知渠道
+                                    notifications = db_manager.get_notification_channels()
+
                                     if notifications:
-                                        log_with_user('info', f"找到 {len(notifications)} 个通知配置，开始发送通知", current_user)
+                                        log_with_user('info', f"找到 {len(notifications)} 个全局通知配置，开始发送通知", current_user)
 
                                         # 创建新的事件循环来运行异步通知
                                         new_loop = asyncio.new_event_loop()
@@ -1831,9 +1853,9 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                                         finally:
                                             new_loop.close()
                                     else:
-                                        log_with_user('warning', f"账号 {account_id} 未配置通知渠道", current_user)
+                                        log_with_user('warning', f"没有可用的全局通知渠道", current_user)
                                 except Exception as db_err:
-                                    log_with_user('error', f"获取通知配置失败: {str(db_err)}", current_user)
+                                    log_with_user('error', f"获取全局通知配置失败: {str(db_err)}", current_user)
                         except Exception as notify_err:
                             log_with_user('error', f"发送人脸验证通知时出错: {str(notify_err)}", current_user)
                             import traceback
@@ -1887,8 +1909,28 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                                 # 如果账号实例不存在，直接从数据库获取配置并发送通知
                                 log_with_user('warning', f"账号实例不存在: {account_id}，尝试从数据库获取配置并发送通知", current_user)
                                 try:
-                                    # 尝试从数据库获取通知配置
+                                    # 尝试从数据库获取账号级别的通知配置
                                     notifications = db_manager.get_account_notifications(account_id)
+
+                                    # 如果账号没有配置，使用全局通知渠道作为fallback
+                                    if not notifications:
+                                        log_with_user('info', f"账号 {account_id} 未配置通知渠道，尝试使用全局通知渠道", current_user)
+                                        global_channels = db_manager.get_notification_channels()
+                                        # 转换为与账号通知相同的格式
+                                        notifications = []
+                                        for channel in global_channels:
+                                            if channel.get('enabled'):
+                                                notifications.append({
+                                                    'id': channel['id'],
+                                                    'channel_id': channel['id'],
+                                                    'enabled': True,
+                                                    'channel_name': channel['name'],
+                                                    'channel_type': channel['type'],
+                                                    'channel_config': channel['config']
+                                                })
+                                        if notifications:
+                                            log_with_user('info', f"找到 {len(notifications)} 个全局通知渠道", current_user)
+
                                     if notifications:
                                         log_with_user('info', f"找到 {len(notifications)} 个通知配置，开始发送通知", current_user)
 
@@ -1902,7 +1944,8 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                                                     notifications,
                                                     message,
                                                     None,  # 没有截图，传None
-                                                    account_id
+                                                    account_id,
+                                                    user_id  # 添加缺失的 user_id 参数
                                                 )
                                             )
                                             log_with_user('info', f"✅ 已发送人脸验证通知: {account_id}", current_user)
@@ -1913,7 +1956,7 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                                         finally:
                                             new_loop.close()
                                     else:
-                                        log_with_user('warning', f"账号 {account_id} 未配置通知渠道", current_user)
+                                        log_with_user('warning', f"账号 {account_id} 未配置通知渠道，且没有可用的全局通知渠道", current_user)
                                 except Exception as db_err:
                                     log_with_user('error', f"获取通知配置失败: {str(db_err)}", current_user)
                         except Exception as notify_err:
@@ -3840,7 +3883,7 @@ async def import_keywords(cid: str, file: UploadFile = File(...), current_user: 
                 return str(int(value)).strip()
             return str(value).strip()
 
-        for index, row in df.iterrows():
+        for _, row in df.iterrows():
             keyword = clean_cell_value(row['关键词'])
             item_id = clean_cell_value(row['商品ID']) or None
             reply = clean_cell_value(row['关键词内容'])

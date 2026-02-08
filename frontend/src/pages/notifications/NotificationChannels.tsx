@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import type { FormEvent } from 'react'
 import { motion } from 'framer-motion'
-import { Bell, RefreshCw, Plus, Edit2, Trash2, Send, Settings, MessageCircle, Mail, Link, Smartphone, X, Loader2, Inbox, CheckCircle, Star } from 'lucide-react'
+import { Bell, RefreshCw, Plus, Edit2, Trash2, Send, Settings, MessageCircle, Mail, Link, Smartphone, X, Loader2 } from 'lucide-react'
 import { getNotificationChannels, deleteNotificationChannel, updateNotificationChannel, testNotificationChannel, addNotificationChannel } from '@/api/notifications'
 import { useUIStore } from '@/store/uiStore'
 import { useAuthStore } from '@/store/authStore'
