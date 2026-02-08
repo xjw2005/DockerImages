@@ -50,9 +50,9 @@ class DBManager:
         self.conn = None
         self.lock = threading.RLock()  # 使用可重入锁保护数据库操作
 
-        # SQL日志配置 - 默认启用
-        self.sql_log_enabled = True  # 默认启用SQL日志
-        self.sql_log_level = 'INFO'  # 默认使用INFO级别
+        # SQL日志配置 - 默认关闭（可通过环境变量开启）
+        self.sql_log_enabled = False  # 默认关闭SQL逐条日志
+        self.sql_log_level = 'INFO'  # 开启后默认使用INFO级别
 
         # 允许通过环境变量覆盖默认设置
         if os.getenv('SQL_LOG_ENABLED'):
@@ -60,7 +60,7 @@ class DBManager:
         if os.getenv('SQL_LOG_LEVEL'):
             self.sql_log_level = os.getenv('SQL_LOG_LEVEL', 'INFO').upper()
 
-        logger.info(f"SQL日志已启用，日志级别: {self.sql_log_level}")
+        logger.info(f"SQL日志状态: {'启用' if self.sql_log_enabled else '关闭'}，日志级别: {self.sql_log_level}")
 
         self.init_db()
     
