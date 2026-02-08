@@ -1179,53 +1179,88 @@ class XianyuSliderStealth:
         else:
             return t
     
-    def _generate_physics_trajectory(self, distance: float):
-        """基于物理加速度模型生成轨迹 - 极速模式
-        
+    def _generate_physics_trajectory(self, distance: float, attempt: int = 1):
+        """基于物理加速度模型生成轨迹 - 极速模式 + 自适应超调策略
+
         优化策略：
         1. 极少轨迹点（5-8步）：快速完成
         2. 持续加速：一气呵成，不减速
-        3. 确保超调50%以上：保证滑动到位
+        3. 自适应超调：根据尝试次数调整超调比例
         4. 无回退：单向滑动
+
+        Args:
+            distance: 滑动距离
+            attempt: 当前尝试次数（用于自适应调整）
         """
         trajectory = []
-        # 确保超调100%
-        target_distance = distance * random.uniform(2.0, 2.1)  # 超调100-110%
-        
-        # 极少步数（5-8步）
-        steps = random.randint(5, 8)
-        
+
+        # ========== 【优化1：自适应超调策略】 ==========
+        # 根据尝试次数动态调整超调比例
+        if attempt == 1:
+            # 第一次：保守超调（80-90%）- 避免过度
+            overshoot_min, overshoot_max = 1.8, 2.0
+            strategy_name = "保守超调(80-90%)"
+        elif attempt == 2:
+            # 第二次：标准超调（100-110%）- 平衡
+            overshoot_min, overshoot_max = 2.0, 2.2
+            strategy_name = "标准超调(100-110%)"
+        else:
+            # 第三次及以上：激进超调（120-140%）- 确保到位
+            overshoot_min, overshoot_max = 2.2, 2.4
+            strategy_name = "激进超调(120-140%)"
+
+        target_distance = distance * random.uniform(overshoot_min, overshoot_max)
+        logger.info(f"【{self.pure_user_id}】🎯 第{attempt}次：{strategy_name}")
+
+        # ========== 【原始代码 - 已注释】 ==========
+        # # 确保超调100%
+        # target_distance = distance * random.uniform(2.0, 2.1)  # 超调100-110%
+        # ========================================
+
+        # 动态调整步数（第一次稍慢，后面加速）
+        if attempt == 1:
+            steps = random.randint(6, 9)  # 第一次稍多步数
+        else:
+            steps = random.randint(5, 7)  # 后续减少步数提速
+
         # 极快时间间隔
         base_delay = random.uniform(0.0002, 0.0005)
-        
+
         # 生成轨迹点 - 直线加速
         for i in range(steps):
             progress = (i + 1) / steps
-            
+
             # 计算当前位置（使用平方加速曲线，越来越快）
             x = target_distance * (progress ** 1.5)  # 加速曲线
-            
+
             # 极小Y轴抖动
             y = random.uniform(0, 2)
-            
+
             # 极短延迟
             delay = base_delay * random.uniform(0.9, 1.1)
-            
+
             trajectory.append((x, y, delay))
-        
-        logger.info(f"【{self.pure_user_id}】极速模式：{len(trajectory)}步，超调100%+")
+
+        logger.info(f"【{self.pure_user_id}】极速模式：{len(trajectory)}步，超调策略={strategy_name}")
         return trajectory
     
-    def generate_human_trajectory(self, distance: float):
-        """生成人类化滑动轨迹 - 只使用极速物理模型"""
+    def generate_human_trajectory(self, distance: float, attempt: int = 1):
+        """生成人类化滑动轨迹 - 只使用极速物理模型
+
+        Args:
+            distance: 滑动距离
+            attempt: 当前尝试次数（用于自适应调整）
+        """
         try:
             # 只使用物理加速度模型（移除贝塞尔模型以提高速度和稳定性）
-            logger.info(f"【{self.pure_user_id}】📐 使用极速物理模型生成轨迹")
-            trajectory = self._generate_physics_trajectory(distance)
-            
+            logger.info(f"【{self.pure_user_id}】📐 使用极速物理模型生成轨迹 (第{attempt}次)")
+
+            # 传递尝试次数以支持自适应超调
+            trajectory = self._generate_physics_trajectory(distance, attempt)
+
             logger.debug(f"【{self.pure_user_id}】极速模式：一次拖到位，无回退")
-            
-            # 保存轨迹数据
+
+            # 保存轨迹数据（记录尝试次数）
             self.current_trajectory_data = {
                 "distance": distance,
                 "model": "physics_fast",
@@ -1233,11 +1268,12 @@ class XianyuSliderStealth:
                 "trajectory_points": trajectory.copy(),
                 "final_left_px": 0,
                 "completion_used": False,
-                "completion_steps": 0
+                "completion_steps": 0,
+                "attempt": attempt  # 记录尝试次数
             }
-            
+
             return trajectory
-            
+
         except Exception as e:
             logger.error(f"【{self.pure_user_id}】生成轨迹时出错: {str(e)}")
             return []
@@ -2264,9 +2300,9 @@ class XianyuSliderStealth:
                 if slide_distance <= 0:
                     logger.error(f"【{self.pure_user_id}】滑动距离计算失败")
                     continue
-                
-                # 3. 生成人类化轨迹
-                trajectory = self.generate_human_trajectory(slide_distance)
+
+                # 3. 生成人类化轨迹（传递尝试次数以支持自适应超调）
+                trajectory = self.generate_human_trajectory(slide_distance, attempt)
                 if not trajectory:
                     logger.error(f"【{self.pure_user_id}】轨迹生成失败")
                     continue

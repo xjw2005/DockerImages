@@ -1,4 +1,4 @@
-import { get, post, put } from '@/utils/request'
+import { get, post, put, del } from '@/utils/request'
 import type { ApiResponse, SystemSettings } from '@/types'
 
 // 获取系统设置
@@ -182,4 +182,40 @@ export const checkDefaultPassword = async (): Promise<{ using_default: boolean }
     console.error('checkDefaultPassword error:', error)
     return { using_default: false }
   }
+}
+
+// ========== 通知接收人 ==========
+
+export interface NotificationRecipient {
+  id: number
+  email: string
+  user_id: string
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+// 获取当前用户的通知接收人列表
+export const getNotificationRecipients = async (): Promise<{ success: boolean; data?: NotificationRecipient[] }> => {
+  try {
+    const data = await get<NotificationRecipient[]>('/notification-recipients')
+    return { success: true, data }
+  } catch {
+    return { success: false, data: [] }
+  }
+}
+
+// 添加通知接收人
+export const addNotificationRecipient = async (email: string, name?: string): Promise<ApiResponse> => {
+  return post('/notification-recipients', { email, name: name || '' })
+}
+
+// 更新通知接收人
+export const updateNotificationRecipient = async (recipientId: string, data: { email?: string; enabled?: boolean }): Promise<ApiResponse> => {
+  return put(`/notification-recipients/${recipientId}`, data)
+}
+
+// 删除通知接收人
+export const deleteNotificationRecipient = async (recipientId: string): Promise<ApiResponse> => {
+  return del(`/notification-recipients/${recipientId}`)
 }

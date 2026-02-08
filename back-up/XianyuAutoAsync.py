@@ -306,13 +306,7 @@ class XianyuLive:
                     tasks_to_cancel.append(("Cookie刷新任务", self.cookie_refresh_task))
                 else:
                     logger.debug(f"【{self.cookie_id}】Cookie刷新任务已完成，跳过")
-
-            if self.polling_delivery_task:
-                if not self.polling_delivery_task.done():
-                    tasks_to_cancel.append(("轮询自动发货任务", self.polling_delivery_task))
-                else:
-                    logger.debug(f"【{self.cookie_id}】轮询自动发货任务已完成，跳过")
-
+            
             if not tasks_to_cancel:
                 logger.info(f"【{self.cookie_id}】没有后台任务需要取消（所有任务已完成或不存在）")
                 # 立即重置任务引用
@@ -320,7 +314,6 @@ class XianyuLive:
                 self.token_refresh_task = None
                 self.cleanup_task = None
                 self.cookie_refresh_task = None
-                self.polling_delivery_task = None
                 return
             
             logger.info(f"【{self.cookie_id}】开始取消 {len(tasks_to_cancel)} 个未完成的后台任务...")
@@ -455,7 +448,6 @@ class XianyuLive:
             self.token_refresh_task = None
             self.cleanup_task = None
             self.cookie_refresh_task = None
-            self.polling_delivery_task = None
             logger.info(f"【{self.cookie_id}】后台任务引用已全部重置")
 
     def _calculate_retry_delay(self, error_msg: str) -> int:
@@ -702,12 +694,6 @@ class XianyuLive:
         self.last_cookie_refresh_time = 0
         self.cookie_refresh_lock = asyncio.Lock()  # 使用Lock防止重复执行Cookie刷新
         self.cookie_refresh_enabled = True  # 是否启用Cookie刷新功能
-
-        # 轮询自动发货任务
-        self.polling_delivery_task = None
-        self.polling_delivery_interval = 300  # 5分钟轮询一次（秒）
-        self.last_polling_delivery_time = 0
-        self.polling_delivery_enabled = True  # 是否启用轮询自动发货功能
 
         # 扫码登录Cookie刷新标志
         self.last_qr_cookie_refresh_time = 0  # 记录上次扫码登录Cookie刷新时间
@@ -1748,7 +1734,7 @@ class XianyuLive:
                     # user_id=f"{self.cookie_id}_{int(time.time() * 1000)}",  # 使用唯一ID避免冲突
                     user_id=f"{self.cookie_id}",  # 使用唯一ID避免冲突
                     enable_learning=True,  # 启用学习功能
-                    headless=True  # 使用无头模式
+                    headless=False  # 使用无头模式
                 )
 
                 # 在线程池中执行滑块验证
@@ -2121,8 +2107,9 @@ class XianyuLive:
             
             username = account_info.get('username', '')
             password = account_info.get('password', '')
+            
             # show_browser = account_info.get('show_browser', False)  # 如果需要显示浏览器，请取消注释这行并确保在配置文件中正确设置
-            # 显示浏览器（设置。headless设置。总开关）
+            # 显示浏览器设置（headless设置。总开关。关系到滑动验证）
             show_browser = False
             
             # 检查是否配置了用户名和密码
@@ -2906,6 +2893,7 @@ class XianyuLive:
         except Exception as e:
             logger.error(f"批量获取商品详情异常: {self._safe_str(e)}")
             return success_count
+
     async def get_item_info(self, item_id, retry_count=0):
         """获取商品信息，自动处理token失效的情况"""
         if retry_count >= 4:  # 最多重试3次
@@ -5579,90 +5567,6 @@ class XianyuLive:
         status = "启用" if enabled else "禁用"
         logger.info(f"【{self.cookie_id}】Cookie刷新功能已{status}")
 
-    async def polling_delivery_loop(self):
-        """轮询自动发货任务 - 定期扫描待发货订单并执行自动发货"""
-        try:
-            logger.info(f"【{self.cookie_id}】轮询自动发货任务已启动")
-            while True:
-                try:
-                    # 检查是否启用轮询自动发货
-                    if not self.polling_delivery_enabled:
-                        await asyncio.sleep(60)
-                        continue
-
-                    current_time = time.time()
-
-                    # 检查是否到达轮询时间
-                    if current_time - self.last_polling_delivery_time >= self.polling_delivery_interval:
-                        logger.info(f"【{self.cookie_id}】开始轮询扫描待发货订单...")
-
-                        # 查询待发货订单
-                        from db_manager import db_manager
-                        pending_orders = db_manager.get_pending_delivery_orders(self.cookie_id)
-
-                        if pending_orders:
-                            logger.info(f"【{self.cookie_id}】发现 {len(pending_orders)} 个待发货订单")
-
-                            # 遍历待发货订单
-                            for order in pending_orders:
-                                order_id = order['order_id']
-                                item_id = order['item_id']
-                                buyer_id = order['buyer_id']
-
-                                # 检查冷却期（防重复发货）
-                                if not self.can_auto_delivery(order_id):
-                                    logger.info(f"【{self.cookie_id}】订单 {order_id} 在冷却期内，跳过")
-                                    continue
-
-                                # 检查是否已经发货过（防止重复）
-                                if order_id in self.delivery_sent_orders:
-                                    logger.info(f"【{self.cookie_id}】订单 {order_id} 已发货过，跳过")
-                                    continue
-
-                                # 执行自动发货
-                                try:
-                                    logger.info(f"【{self.cookie_id}】开始自动发货: 订单={order_id}, 商品={item_id}, 买家={buyer_id}")
-                                    await self._auto_delivery(
-                                        item_id=item_id,
-                                        item_title=None,  # 会在_auto_delivery内部查询
-                                        order_id=order_id,
-                                        send_user_id=buyer_id
-                                    )
-                                    logger.info(f"【{self.cookie_id}】订单 {order_id} 自动发货完成")
-                                except Exception as e:
-                                    logger.error(f"【{self.cookie_id}】订单 {order_id} 自动发货失败: {self._safe_str(e)}")
-                                    import traceback
-                                    logger.error(f"【{self.cookie_id}】详细错误: {traceback.format_exc()}")
-                        else:
-                            logger.info(f"【{self.cookie_id}】没有待发货订单")
-
-                        # 更新最后轮询时间
-                        self.last_polling_delivery_time = current_time
-
-                    # 每分钟检查一次是否需要执行
-                    await asyncio.sleep(60)
-
-                except asyncio.CancelledError:
-                    logger.info(f"【{self.cookie_id}】轮询自动发货循环收到取消信号，准备退出")
-                    raise
-                except Exception as e:
-                    logger.error(f"【{self.cookie_id}】轮询自动发货循环失败: {self._safe_str(e)}")
-                    # 出错后也等待1分钟再重试
-                    try:
-                        await asyncio.sleep(60)
-                    except asyncio.CancelledError:
-                        logger.info(f"【{self.cookie_id}】轮询自动发货循环在重试等待时收到取消信号，准备退出")
-                        raise
-        except asyncio.CancelledError:
-            logger.info(f"【{self.cookie_id}】轮询自动发货循环已取消，正在退出...")
-            raise
-
-    def enable_polling_delivery(self, enabled: bool = True):
-        """启用或禁用轮询自动发货功能"""
-        self.polling_delivery_enabled = enabled
-        status = "启用" if enabled else "禁用"
-        logger.info(f"【{self.cookie_id}】轮询自动发货功能已{status}")
-
 
     async def refresh_cookies_from_qr_login(self, qr_cookies_str: str, cookie_id: str = None, user_id: int = None):
         """使用扫码登录获取的cookie访问指定界面获取真实cookie并存入数据库
@@ -7003,10 +6907,10 @@ class XianyuLive:
     def _extract_message_id(self, message_data: dict) -> str:
         """
         从消息数据中提取消息ID，用于去重
-
+        
         Args:
             message_data: 原始消息数据
-
+            
         Returns:
             消息ID字符串，如果无法提取则返回None
         """
@@ -7024,12 +6928,10 @@ class XianyuLive:
                                 import json
                                 biz_tag_dict = json.loads(biz_tag)
                                 if isinstance(biz_tag_dict, dict) and "messageId" in biz_tag_dict:
-                                    extracted_msg_id = biz_tag_dict.get("messageId")
-                                    logger.debug(f"【{self.cookie_id}】✅ 成功提取messageId: {extracted_msg_id}")
-                                    return extracted_msg_id
+                                    return biz_tag_dict.get("messageId")
                             except (json.JSONDecodeError, TypeError):
                                 pass
-
+                        
                         # 如果 bizTag 解析失败，尝试从 extJson 中提取
                         if "extJson" in message_10:
                             ext_json = message_10.get("extJson", "")
@@ -7038,26 +6940,20 @@ class XianyuLive:
                                     import json
                                     ext_json_dict = json.loads(ext_json)
                                     if isinstance(ext_json_dict, dict) and "messageId" in ext_json_dict:
-                                        extracted_msg_id = ext_json_dict.get("messageId")
-                                        logger.debug(f"【{self.cookie_id}】✅ 从extJson提取messageId: {extracted_msg_id}")
-                                        return extracted_msg_id
+                                        return ext_json_dict.get("messageId")
                                 except (json.JSONDecodeError, TypeError):
                                     pass
         except Exception as e:
-            logger.warning(f"【{self.cookie_id}❌ 提取messageId异常: {type(e).__name__}: {str(e)}")
-
-        # ========== 【修复】如果没有提取到messageId，返回None而不是生成备用ID ==========
-        # 原来的代码会使用当前时间戳生成备用ID，导致去重失效
-        # 现在返回None，让调用方使用其他去重机制（比如消息内容hash）
-        logger.warning(f"【{self.cookie_id}】⚠️ 未能从消息中提取messageId，将依赖其他去重机制")
+            logger.debug(f"【{self.cookie_id}】提取消息ID失败: {self._safe_str(e)}")
+        
         return None
 
-    async def _schedule_debounced_reply(self, chat_id: str, message_data: dict, websocket,
+    async def _schedule_debounced_reply(self, chat_id: str, message_data: dict, websocket, 
                                        send_user_name: str, send_user_id: str, send_message: str,
                                        item_id: str, msg_time: str):
         """
         调度防抖回复：如果用户连续发送消息，等待用户停止发送后再回复最后一条消息
-
+        
         Args:
             chat_id: 聊天ID
             message_data: 原始消息数据
@@ -7070,18 +6966,21 @@ class XianyuLive:
         """
         # 提取消息ID并检查是否已处理
         message_id = self._extract_message_id(message_data)
-
-        # ========== 【修复】如果没有messageId，使用消息内容hash作为唯一标识 ==========
-        # 使用消息内容的hash而不是时间戳，确保相同消息有相同的ID
+        # 如果没有 messageId，使用备用标识（chat_id + send_message + 时间戳）
         if not message_id:
-            import hashlib
-            # 使用chat_id + 消息内容 + 商品ID生成唯一标识
-            content_hash = hashlib.md5(
-                f"{chat_id}_{send_message}_{item_id}".encode('utf-8')
-            ).hexdigest()
-            message_id = f"fallback_{content_hash}"
-            logger.debug(f"【{self.cookie_id}】使用备用消息ID: {message_id[:20]}...")
-
+            try:
+                # 尝试从消息数据中提取时间戳
+                create_time = 0
+                if isinstance(message_data, dict) and "1" in message_data:
+                    message_1 = message_data.get("1")
+                    if isinstance(message_1, dict):
+                        create_time = message_1.get("5", 0)
+                # 使用组合键作为备用标识
+                message_id = f"{chat_id}_{send_message}_{create_time}"
+            except Exception:
+                # 如果提取失败，使用当前时间戳
+                message_id = f"{chat_id}_{send_message}_{int(time.time() * 1000)}"
+        
         async with self.processed_message_ids_lock:
             current_time = time.time()
             
@@ -7128,11 +7027,8 @@ class XianyuLive:
             if chat_id in self.message_debounce_tasks:
                 old_task = self.message_debounce_tasks[chat_id].get('task')
                 if old_task and not old_task.done():
-                    logger.warning(f"【{self.cookie_id}】🔴 准备取消chat_id {chat_id} 的旧防抖任务 (task.done={old_task.done()})")
                     old_task.cancel()
-                    logger.warning(f"【{self.cookie_id}】✅ 已取消旧防抖任务")
-                else:
-                    logger.warning(f"【{self.cookie_id}】⚠️ 旧任务状态: old_task={old_task is not None}, done={old_task.done() if old_task else 'N/A'}")
+                    logger.warning(f"【{self.cookie_id}】取消chat_id {chat_id} 的旧防抖任务")
             
             # 更新最后一条消息信息
             current_timer = time.time()
@@ -7917,17 +7813,10 @@ class XianyuLive:
                             else:
                                 logger.info(f"【{self.cookie_id}】Cookie刷新任务已在运行，跳过启动")
 
-                            if not self.polling_delivery_task or self.polling_delivery_task.done():
-                                logger.info(f"【{self.cookie_id}】启动轮询自动发货任务...")
-                                self.polling_delivery_task = asyncio.create_task(self.polling_delivery_loop())
-                                tasks_started.append("轮询自动发货")
-                            else:
-                                logger.info(f"【{self.cookie_id}】轮询自动发货任务已在运行，跳过启动")
-
                             # 记录所有后台任务状态
                             if tasks_started:
                                 logger.info(f"【{self.cookie_id}】✅ 新启动的任务: {', '.join(tasks_started)}")
-                            logger.info(f"【{self.cookie_id}】✅ 所有后台任务状态: 心跳(已启动), Token刷新({'运行中' if self.token_refresh_task and not self.token_refresh_task.done() else '已启动'}), 暂停清理({'运行中' if self.cleanup_task and not self.cleanup_task.done() else '已启动'}), Cookie刷新({'运行中' if self.cookie_refresh_task and not self.cookie_refresh_task.done() else '已启动'}), 轮询自动发货({'运行中' if self.polling_delivery_task and not self.polling_delivery_task.done() else '已启动'})")
+                            logger.info(f"【{self.cookie_id}】✅ 所有后台任务状态: 心跳(已启动), Token刷新({'运行中' if self.token_refresh_task and not self.token_refresh_task.done() else '已启动'}), 暂停清理({'运行中' if self.cleanup_task and not self.cleanup_task.done() else '已启动'}), Cookie刷新({'运行中' if self.cookie_refresh_task and not self.cookie_refresh_task.done() else '已启动'})")
                             
                             logger.info(f"【{self.cookie_id}】开始监听WebSocket消息...")
                             logger.info(f"【{self.cookie_id}】WebSocket连接状态正常，等待服务器消息...")
@@ -8122,7 +8011,6 @@ class XianyuLive:
                         self.token_refresh_task = None
                         self.cleanup_task = None
                         self.cookie_refresh_task = None
-                        self.polling_delivery_task = None
                         logger.warning(f"【{self.cookie_id}】清理失败，已强制重置所有任务引用")
                         # 使用可中断的sleep，并定期输出日志
                         logger.info(f"【{self.cookie_id}】清理失败后开始等待 {retry_delay} 秒...")
@@ -8186,7 +8074,6 @@ class XianyuLive:
                     self.token_refresh_task = None
                     self.cleanup_task = None
                     self.cookie_refresh_task = None
-                    self.polling_delivery_task = None
             else:
                 logger.info(f"【{self.cookie_id}】所有后台任务已清理完成，跳过重复清理")
                 # 确保任务引用被重置
@@ -8194,7 +8081,6 @@ class XianyuLive:
                 self.token_refresh_task = None
                 self.cleanup_task = None
                 self.cookie_refresh_task = None
-                self.polling_delivery_task = None
             
             # 清理所有后台任务
             if self.background_tasks:
@@ -8213,7 +8099,7 @@ class XianyuLive:
             # 从全局实例字典中注销当前实例
             self._unregister_instance()
             logger.info(f"【{self.cookie_id}】XianyuLive主程序已完全退出")
-            
+
     async def get_item_list_info(self, page_number=1, page_size=20, retry_count=0):
         """获取商品信息，自动处理token失效的情况
 

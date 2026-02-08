@@ -353,7 +353,7 @@ class OrderDetailFetcher:
             except Exception as e:
                 logger.error(f"获取订单详情失败: {e}")
                 return None
-
+            
     def _parse_sku_content(self, sku_content: str) -> Dict[str, str]:
         """
         解析SKU内容，根据冒号分割规格名称和规格值
@@ -735,29 +735,3 @@ async def fetch_order_detail_simple(order_id: str, cookie_string: str = None, he
     finally:
         await fetcher.close()
     return None
-
-
-# 测试代码
-if __name__ == "__main__":
-    async def test():
-        # 测试订单ID
-        test_order_id = "2856024697612814489"
-        
-        print(f"🔍 开始获取订单详情: {test_order_id}")
-        
-        result = await fetch_order_detail_simple(test_order_id, headless=False)
-        
-        if result:
-            print("✅ 订单详情获取成功:")
-            print(f"📋 订单ID: {result['order_id']}")
-            print(f"🌐 URL: {result['url']}")
-            print(f"📄 页面标题: {result['title']}")
-            print(f"🛍️ 规格名称: {result.get('spec_name', '未获取到')}")
-            print(f"📝 规格值: {result.get('spec_value', '未获取到')}")
-            print(f"🔢 数量: {result.get('quantity', '未获取到')}")
-            print(f"💰 金额: {result.get('amount', '未获取到')}")
-        else:
-            print("❌ 订单详情获取失败")
-    
-    # 运行测试
-    asyncio.run(test())

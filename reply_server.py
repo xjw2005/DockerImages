@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, status, UploadFile, File, Form, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -76,7 +76,7 @@ def cleanup_qr_check_records():
             del qr_check_locks[session_id]
 
 
-async def _send_notifications_directly(notifications, message: str, attachment_path: str, account_id: str, user_id: int):
+async def _send_notifications_directly(message: str, attachment_path: str, account_id: str, user_id: int):
     """直接发送通知（不依赖 XianyuLive 实例）
 
     Args:
@@ -93,58 +93,56 @@ async def _send_notifications_directly(notifications, message: str, attachment_p
     import os
 
     logger.info(f"开始直接发送通知给账号 {account_id}")
-    logger.info(f"📋 收到的通知配置数量: {len(notifications) if notifications else 0}")
-    logger.info(f"📋 通知配置内容: {notifications}")
-
     # 从系统设置获取通知收件邮箱
     from db_manager import db_manager
-    recipient_email = db_manager.get_system_setting('notification_recipient_email')
 
-    if not recipient_email:
+    # 获取当前用户的通知接收人邮箱
+    recipients = db_manager.get_notification_recipients(user_id=str(user_id))
+    if not recipients:
         logger.warning("未设置通知收件邮箱，请在系统设置中配置")
         return
 
+    # 获取第一个启用的邮箱
+    recipient = next((r for r in recipients if r.get('enabled', True)), None)
+    if not recipient:
+        logger.warning("没有启用的通知收件邮箱")
+        return
+
+    recipient_email = recipient['email']
     logger.info(f"📧 收件邮箱: {recipient_email}")
 
-    for idx, notification in enumerate(notifications):
-        logger.info(f"📧 开始处理第 {idx+1} 个通知配置")
-        try:
-            #无论如何都要发送。
-            # if not notification.get('enabled', True):
-            #     continue
+    try:
+        #无论如何都要发送。
+        # if not notification.get('enabled', True):
+        #     continue
 
-            # 兼容两种字段命名：账号通知格式 和 全局通知格式
-            channel_type = notification.get('channel_type') or notification.get('type')
-            channel_config = notification.get('channel_config') or notification.get('config')
-            channel_name = notification.get('channel_name') or notification.get('name', 'Unknown')
+        channel_type = "email"
+        smtp_server = db_manager.get_system_setting('smtp_server')
+        smtp_port = db_manager.get_system_setting('smtp_port')
+        smtp_password = db_manager.get_system_setting('smtp_password')
+        smtp_user = db_manager.get_system_setting('smtp_user')
+        smtp_config = {
+            "smtp_server": smtp_server, "smtp_port": smtp_port, "email_user": smtp_user, "email_password": smtp_password, "recipient_email": recipient_email, "smtp_use_tls": smtp_port}
 
-            logger.info(f"📧 处理通知渠道: 名称={channel_name}, 类型={channel_type}, 配置={channel_config}")
+        logger.info(f"📧 处理通知渠道: 类型={channel_type}")
 
-            # 解析配置数据（JSON字符串转字典）
-            if isinstance(channel_config, str):
-                import json
-                config_data = json.loads(channel_config)
-            else:
-                config_data = channel_config
+        # 解析配置数据（JSON字符串转字典）
 
-            logger.info(f"📧 解析后配置: {config_data}")
+        logger.info(f"📧 解析后配置: {smtp_config}")
 
-            if channel_type == 'email':
-                # 使用系统设置中的收件邮箱
-                config_data['recipient_email'] = recipient_email
-                logger.info(f"使用系统设置中的收件邮箱: {recipient_email}")
-                logger.info(f"📧 准备发送邮件，收件人: {recipient_email}")
-                # 发送邮件通知
-                await _send_email_direct(config_data, message, attachment_path)
-                logger.info(f"✅ 邮件发送完成")
-            else:
-                logger.warning(f"暂不支持的通知类型: {channel_type}")
+        if channel_type == 'email':
+            # 使用系统设置中的收件邮箱
+            logger.info(f"📧 准备发送邮件，收件人: {recipient}")
+            # 发送邮件通知
+            await _send_email_direct(smtp_config, message, attachment_path)
+            logger.info(f"✅ 邮件发送完成")
+        else:
+            logger.warning(f"暂不支持的通知类型: {channel_type}")
 
-        except Exception as e:
-            channel_name = notification.get('channel_name') or notification.get('name', 'Unknown')
-            logger.error(f"发送通知失败 ({channel_name}): {str(e)}")
-            import traceback
-            logger.error(f"详细错误: {traceback.format_exc()}")
+    except Exception as e:
+        logger.error(f"发送通知失败 : {str(e)}")
+        import traceback
+        logger.error(f"详细错误: {traceback.format_exc()}")
 
 
 async def _send_email_direct(config_data: dict, message: str, attachment_path: str = None):
@@ -1499,6 +1497,16 @@ class MessageNotificationIn(BaseModel):
     enabled: bool = True
 
 
+class NotificationRecipientIn(BaseModel):
+    email: str
+    name: Optional[str] = ""
+
+
+class NotificationRecipientUpdate(BaseModel):
+    email: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
 class SystemSettingIn(BaseModel):
     value: str
     description: Optional[str] = None
@@ -1770,7 +1778,7 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
         # 定义通知回调函数，用于检测到人脸认证时返回验证链接或截图（同步函数）
         def notification_callback(message: str, screenshot_path: str = None, verification_url: str = None, screenshot_path_new: str = None):
             """人脸认证通知回调（同步）
-            
+
             Args:
                 message: 通知消息
                 screenshot_path: 旧版截图路径（兼容参数）
@@ -1780,196 +1788,86 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
             try:
                 # 优先使用新的截图路径参数
                 actual_screenshot_path = screenshot_path_new if screenshot_path_new else screenshot_path
-                
-                # 优先使用截图路径，如果没有截图则使用验证链接
-                if actual_screenshot_path and os.path.exists(actual_screenshot_path):
-                    # 更新会话状态，保存截图路径
-                    password_login_sessions[session_id]['status'] = 'verification_required'
-                    password_login_sessions[session_id]['screenshot_path'] = actual_screenshot_path
-                    password_login_sessions[session_id]['verification_url'] = None
-                    password_login_sessions[session_id]['qr_code_url'] = None
+
+                # 更新会话状态
+                password_login_sessions[session_id]['status'] = 'verification_required'
+                password_login_sessions[session_id]['screenshot_path'] = actual_screenshot_path
+                password_login_sessions[session_id]['verification_url'] = verification_url
+                password_login_sessions[session_id]['qr_code_url'] = None
+
+                if actual_screenshot_path:
                     log_with_user('info', f"人脸认证截图已保存: {session_id}, 路径: {actual_screenshot_path}", current_user)
-                    
-                    # 发送通知到用户配置的渠道
-                    def send_face_verification_notification():
-                        """在后台线程中发送人脸验证通知"""
-                        try:
-                            from XianyuAutoAsync import XianyuLive
-                            log_with_user('info', f"开始尝试发送人脸验证通知: {account_id}", current_user)
-                            
-                            # 尝试获取XianyuLive实例（如果账号已经存在）
-                            live_instance = XianyuLive.get_instance(account_id)
-                            
-                            if live_instance:
-                                log_with_user('info', f"找到账号实例，准备发送通知: {account_id}", current_user)
-                                # 创建新的事件循环来运行异步通知
-                                new_loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(new_loop)
-                                try:
-                                    new_loop.run_until_complete(
-                                        live_instance.send_token_refresh_notification(
-                                            error_message=message,
-                                            notification_type="face_verification",
-                                            verification_url=None,
-                                            attachment_path=actual_screenshot_path
-                                        )
-                                    )
-                                    log_with_user('info', f"✅ 已发送人脸验证通知: {account_id}", current_user)
-                                except Exception as notify_err:
-                                    log_with_user('error', f"发送人脸验证通知失败: {str(notify_err)}", current_user)
-                                    import traceback
-                                    log_with_user('error', f"通知错误详情: {traceback.format_exc()}", current_user)
-                                finally:
-                                    new_loop.close()
-                            else:
-                                # 如果账号实例不存在，直接使用全局通知渠道发送通知
-                                log_with_user('info', f"账号实例不存在，使用全局通知渠道发送人脸验证通知: {account_id}", current_user)
-                                try:
-                                    # 直接获取全局通知渠道
-                                    notifications = db_manager.get_notification_channels()
-
-                                    if notifications:
-                                        log_with_user('info', f"找到 {len(notifications)} 个全局通知配置，开始发送通知", current_user)
-
-                                        # 创建新的事件循环来运行异步通知
-                                        new_loop = asyncio.new_event_loop()
-                                        asyncio.set_event_loop(new_loop)
-                                        try:
-                                            # 直接发送通知（不依赖 XianyuLive 实例）
-                                            new_loop.run_until_complete(
-                                                _send_notifications_directly(
-                                                    notifications,
-                                                    message,
-                                                    actual_screenshot_path,
-                                                    account_id,
-                                                    user_id
-                                                )
-                                            )
-                                            log_with_user('info', f"✅ 已发送人脸验证通知: {account_id}", current_user)
-                                        except Exception as direct_err:
-                                            log_with_user('error', f"直接发送通知失败: {str(direct_err)}", current_user)
-                                            import traceback
-                                            log_with_user('error', f"通知错误详情: {traceback.format_exc()}", current_user)
-                                        finally:
-                                            new_loop.close()
-                                    else:
-                                        log_with_user('warning', f"没有可用的全局通知渠道", current_user)
-                                except Exception as db_err:
-                                    log_with_user('error', f"获取全局通知配置失败: {str(db_err)}", current_user)
-                        except Exception as notify_err:
-                            log_with_user('error', f"发送人脸验证通知时出错: {str(notify_err)}", current_user)
-                            import traceback
-                            log_with_user('error', f"通知错误详情: {traceback.format_exc()}", current_user)
-                    
-                    # 在后台线程中发送通知，避免阻塞登录流程
-                    import threading
-                    notification_thread = threading.Thread(target=send_face_verification_notification)
-                    notification_thread.daemon = True
-                    notification_thread.start()
-                    log_with_user('info', f"已启动人脸验证通知发送线程: {account_id}", current_user)
                 elif verification_url:
-                    # 如果没有截图，使用验证链接（兼容旧版本）
-                    password_login_sessions[session_id]['status'] = 'verification_required'
-                    password_login_sessions[session_id]['verification_url'] = verification_url
-                    password_login_sessions[session_id]['screenshot_path'] = None
-                    password_login_sessions[session_id]['qr_code_url'] = None
                     log_with_user('info', f"人脸认证验证链接已保存: {session_id}, URL: {verification_url}", current_user)
 
-                    # 发送通知到用户配置的渠道
-                    def send_face_verification_notification():
-                        """在后台线程中发送人脸验证通知"""
-                        try:
-                            from XianyuAutoAsync import XianyuLive
-                            log_with_user('info', f"开始尝试发送人脸验证通知: {account_id}", current_user)
+                # 统一的人脸验证通知发送函数
+                def send_face_verification_notification():
+                    """在后台线程中发送人脸验证通知"""
+                    try:
+                        from XianyuAutoAsync import XianyuLive
+                        log_with_user('info', f"开始尝试发送人脸验证通知: {account_id}", current_user)
 
-                            # 尝试获取XianyuLive实例（如果账号已经存在）
-                            live_instance = XianyuLive.get_instance(account_id)
+                        # 尝试获取XianyuLive实例（如果账号已经存在）
+                        live_instance = XianyuLive.get_instance(account_id)
 
-                            if live_instance:
-                                log_with_user('info', f"找到账号实例，准备发送通知: {account_id}", current_user)
+                        if live_instance:
+                            log_with_user('info', f"找到账号实例，准备发送通知: {account_id}", current_user)
+                            # 创建新的事件循环来运行异步通知
+                            new_loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(new_loop)
+                            try:
+                                new_loop.run_until_complete(
+                                    live_instance.send_token_refresh_notification(
+                                        error_message=message,
+                                        notification_type="face_verification",
+                                        verification_url=verification_url,
+                                        attachment_path=actual_screenshot_path
+                                    )
+                                )
+                                log_with_user('info', f"✅ 已发送人脸验证通知: {account_id}", current_user)
+                            except Exception as notify_err:
+                                log_with_user('error', f"发送人脸验证通知失败: {str(notify_err)}", current_user)
+                                import traceback
+                                log_with_user('error', f"通知错误详情: {traceback.format_exc()}", current_user)
+                            finally:
+                                new_loop.close()
+                        else:
+                            # 如果账号实例不存在，直接使用全局通知渠道发送通知
+                            log_with_user('info', f"账号实例不存在，使用全局通知渠道发送人脸验证通知: {account_id}", current_user)
+                            try:
                                 # 创建新的事件循环来运行异步通知
                                 new_loop = asyncio.new_event_loop()
                                 asyncio.set_event_loop(new_loop)
                                 try:
+                                    # 直接发送通知（不依赖 XianyuLive 实例）
                                     new_loop.run_until_complete(
-                                        live_instance.send_token_refresh_notification(
-                                            error_message=message,
-                                            notification_type="face_verification",
-                                            verification_url=verification_url
+                                        _send_notifications_directly(
+                                            message,
+                                            actual_screenshot_path,
+                                            account_id,
+                                            user_id
                                         )
                                     )
                                     log_with_user('info', f"✅ 已发送人脸验证通知: {account_id}", current_user)
-                                except Exception as notify_err:
-                                    log_with_user('error', f"发送人脸验证通知失败: {str(notify_err)}", current_user)
+                                except Exception as direct_err:
+                                    log_with_user('error', f"直接发送通知失败: {str(direct_err)}", current_user)
                                     import traceback
                                     log_with_user('error', f"通知错误详情: {traceback.format_exc()}", current_user)
                                 finally:
                                     new_loop.close()
-                            else:
-                                # 如果账号实例不存在，直接从数据库获取配置并发送通知
-                                log_with_user('warning', f"账号实例不存在: {account_id}，尝试从数据库获取配置并发送通知", current_user)
-                                try:
-                                    # 尝试从数据库获取账号级别的通知配置
-                                    notifications = db_manager.get_account_notifications(account_id)
+                            except Exception as db_err:
+                                log_with_user('error', f"获取全局通知配置失败: {str(db_err)}", current_user)
+                    except Exception as notify_err:
+                        log_with_user('error', f"发送人脸验证通知时出错: {str(notify_err)}", current_user)
+                        import traceback
+                        log_with_user('error', f"通知错误详情: {traceback.format_exc()}", current_user)
 
-                                    # 如果账号没有配置，使用全局通知渠道作为fallback
-                                    if not notifications:
-                                        log_with_user('info', f"账号 {account_id} 未配置通知渠道，尝试使用全局通知渠道", current_user)
-                                        global_channels = db_manager.get_notification_channels()
-                                        # 转换为与账号通知相同的格式
-                                        notifications = []
-                                        for channel in global_channels:
-                                            if channel.get('enabled'):
-                                                notifications.append({
-                                                    'id': channel['id'],
-                                                    'channel_id': channel['id'],
-                                                    'enabled': True,
-                                                    'channel_name': channel['name'],
-                                                    'channel_type': channel['type'],
-                                                    'channel_config': channel['config']
-                                                })
-                                        if notifications:
-                                            log_with_user('info', f"找到 {len(notifications)} 个全局通知渠道", current_user)
-
-                                    if notifications:
-                                        log_with_user('info', f"找到 {len(notifications)} 个通知配置，开始发送通知", current_user)
-
-                                        # 创建新的事件循环来运行异步通知
-                                        new_loop = asyncio.new_event_loop()
-                                        asyncio.set_event_loop(new_loop)
-                                        try:
-                                            # 直接发送通知（不依赖 XianyuLive 实例）
-                                            new_loop.run_until_complete(
-                                                _send_notifications_directly(
-                                                    notifications,
-                                                    message,
-                                                    None,  # 没有截图，传None
-                                                    account_id,
-                                                    user_id  # 添加缺失的 user_id 参数
-                                                )
-                                            )
-                                            log_with_user('info', f"✅ 已发送人脸验证通知: {account_id}", current_user)
-                                        except Exception as direct_err:
-                                            log_with_user('error', f"直接发送通知失败: {str(direct_err)}", current_user)
-                                            import traceback
-                                            log_with_user('error', f"通知错误详情: {traceback.format_exc()}", current_user)
-                                        finally:
-                                            new_loop.close()
-                                    else:
-                                        log_with_user('warning', f"账号 {account_id} 未配置通知渠道，且没有可用的全局通知渠道", current_user)
-                                except Exception as db_err:
-                                    log_with_user('error', f"获取通知配置失败: {str(db_err)}", current_user)
-                        except Exception as notify_err:
-                            log_with_user('error', f"发送人脸验证通知时出错: {str(notify_err)}", current_user)
-                            import traceback
-                            log_with_user('error', f"通知错误详情: {traceback.format_exc()}", current_user)
-                    
-                    # 在后台线程中发送通知，避免阻塞登录流程
-                    import threading
-                    notification_thread = threading.Thread(target=send_face_verification_notification)
-                    notification_thread.daemon = True
-                    notification_thread.start()
-                    log_with_user('info', f"已启动人脸验证通知发送线程: {account_id}", current_user)
+                # 在后台线程中发送通知，避免阻塞登录流程
+                import threading
+                notification_thread = threading.Thread(target=send_face_verification_notification)
+                notification_thread.daemon = True
+                notification_thread.start()
+                log_with_user('info', f"已启动人脸验证通知发送线程: {account_id}", current_user)
             except Exception as e:
                 log_with_user('error', f"处理人脸认证通知失败: {str(e)}", current_user)
         
@@ -3063,6 +2961,74 @@ def get_all_message_notifications(current_user: Dict[str, Any] = Depends(get_cur
         # 过滤只属于当前用户的通知配置
         user_notifications = {cid: notifications for cid, notifications in all_notifications.items() if cid in user_cookies}
         return user_notifications
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== 通知接收人管理 ====================
+
+@app.get('/notification-recipients')
+def get_notification_recipients(current_user: Dict[str, Any] = Depends(get_current_user)):
+    """获取当前用户的通知接收人列表"""
+    from db_manager import db_manager
+    try:
+        user_id = str(current_user['user_id'])
+        recipients = db_manager.get_notification_recipients(user_id)
+        return recipients
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/notification-recipients')
+def add_notification_recipient(recipient_data: NotificationRecipientIn, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """添加通知接收人"""
+    from db_manager import db_manager
+    try:
+        user_id = str(current_user['user_id'])
+        recipient_id = db_manager.add_notification_recipient(
+            recipient_data.email,
+            user_id
+        )
+        return {'success': True, 'msg': 'notification recipient added', 'id': recipient_id}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put('/notification-recipients/{recipient_id}')
+def update_notification_recipient(recipient_id: int, recipient_data: NotificationRecipientUpdate, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """更新通知接收人"""
+    from db_manager import db_manager
+    try:
+        user_id = str(current_user['user_id'])
+        success = db_manager.update_notification_recipient(
+            recipient_id,
+            user_id,
+            email=recipient_data.email,
+            enabled=recipient_data.enabled
+        )
+        if success:
+            return {'success': True, 'msg': 'notification recipient updated'}
+        else:
+            raise HTTPException(status_code=404, detail='接收人不存在')
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete('/notification-recipients/{recipient_id}')
+def delete_notification_recipient(recipient_id: int, current_user: Dict[str, Any] = Depends(get_current_user)):
+    """删除通知接收人"""
+    from db_manager import db_manager
+    try:
+        user_id = str(current_user['user_id'])
+        success = db_manager.delete_notification_recipient(recipient_id, user_id)
+        if success:
+            return {'success': True, 'msg': 'notification recipient deleted'}
+        else:
+            raise HTTPException(status_code=404, detail='接收人不存在')
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

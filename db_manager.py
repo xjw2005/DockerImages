@@ -410,6 +410,18 @@ class DBManager:
             )
             ''')
 
+            # 创建通知接收人表
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS notification_recipients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE,
+                user_id TEXT,
+                enabled BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+
             # 创建用户设置表
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_settings (
@@ -2166,6 +2178,132 @@ class DBManager:
                 return cursor.rowcount > 0
             except Exception as e:
                 logger.error(f"删除通知渠道失败: {e}")
+                self.conn.rollback()
+                return False
+
+    # -------------------- 通知接收人操作 --------------------
+    def get_notification_recipients(self, user_id: str = None) -> List[Dict[str, any]]:
+        """获取通知接收人列表
+
+        Args:
+            user_id: 用户ID，如果为None则返回所有接收人
+        """
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                if user_id is not None:
+                    cursor.execute('''
+                    SELECT id, email, user_id, enabled, created_at, updated_at
+                    FROM notification_recipients
+                    WHERE user_id = ?
+                    ORDER BY created_at DESC
+                    ''', (user_id,))
+                else:
+                    cursor.execute('''
+                    SELECT id, email, user_id, enabled, created_at, updated_at
+                    FROM notification_recipients
+                    ORDER BY created_at DESC
+                    ''')
+
+                recipients = []
+                for row in cursor.fetchall():
+                    recipients.append({
+                        'id': row[0],
+                        'email': row[1],
+                        'user_id': row[2],
+                        'enabled': bool(row[3]),
+                        'created_at': row[4],
+                        'updated_at': row[5]
+                    })
+
+                return recipients
+            except Exception as e:
+                logger.error(f"获取通知接收人失败: {e}")
+                return []
+
+    def add_notification_recipient(self, email: str, user_id: str = '') -> int:
+        """添加通知接收人"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                INSERT INTO notification_recipients (email, user_id, enabled)
+                VALUES (?, ?, 1)
+                ''', (email, user_id))
+                self.conn.commit()
+                recipient_id = cursor.lastrowid
+                logger.debug(f"添加通知接收人: {email} (ID: {recipient_id})")
+                return recipient_id
+            except Exception as e:
+                logger.error(f"添加通知接收人失败: {e}")
+                self.conn.rollback()
+                raise
+
+    def update_notification_recipient(self, recipient_id: int, user_id: str, email: str = None, enabled: bool = None) -> bool:
+        """更新通知接收人
+
+        Args:
+            recipient_id: 接收人ID
+            user_id: 用户ID，用于验证权限
+            email: 新邮箱地址（可选）
+            enabled: 是否启用（可选）
+        """
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+
+                # 构建更新语句
+                updates = []
+                params = []
+
+                # 检查 email：非空字符串才更新
+                if email is not None and email.strip():
+                    updates.append("email = ?")
+                    params.append(email)
+
+                # 检查 enabled：明确传值才更新
+                if enabled is not None:
+                    updates.append("enabled = ?")
+                    params.append(enabled)
+
+                # 如果没有任何字段需要更新，直接返回
+                if not updates:
+                    return False
+
+                updates.append("updated_at = CURRENT_TIMESTAMP")
+                params.append(recipient_id)
+                params.append(user_id)
+
+                cursor.execute(f'''
+                UPDATE notification_recipients
+                SET {', '.join(updates)}
+                WHERE id = ? AND user_id = ?
+                ''', params)
+
+                self.conn.commit()
+                logger.debug(f"更新通知接收人: {recipient_id}, 用户: {user_id}")
+                return cursor.rowcount > 0
+            except Exception as e:
+                logger.error(f"更新通知接收人失败: {e}")
+                self.conn.rollback()
+                return False
+
+    def delete_notification_recipient(self, recipient_id: int, user_id: str) -> bool:
+        """删除通知接收人
+
+        Args:
+            recipient_id: 接收人ID
+            user_id: 用户ID，用于验证权限
+        """
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute("DELETE FROM notification_recipients WHERE id = ? AND user_id = ?", (recipient_id, user_id))
+                self.conn.commit()
+                logger.debug(f"删除通知接收人: {recipient_id}, 用户: {user_id}")
+                return cursor.rowcount > 0
+            except Exception as e:
+                logger.error(f"删除通知接收人失败: {e}")
                 self.conn.rollback()
                 return False
 
@@ -4671,6 +4809,65 @@ class DBManager:
 
             except Exception as e:
                 logger.error(f"获取所有订单列表失败: {e}")
+                return []
+
+    def get_pending_delivery_orders(self, cookie_id: str = None, limit: int = 100):
+        """
+        获取待发货订单列表（order_status = 'pending_ship'）
+
+        Args:
+            cookie_id: 可选，指定账号ID；为None时查询所有账号
+            limit: 最大返回数量
+
+        Returns:
+            List[Dict]: 待发货订单列表
+        """
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+
+                if cookie_id:
+                    cursor.execute('''
+                    SELECT order_id, item_id, buyer_id, spec_name, spec_value,
+                           quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at
+                    FROM orders
+                    WHERE order_status = 'pending_ship' AND cookie_id = ?
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                    ''', (cookie_id, limit))
+                else:
+                    cursor.execute('''
+                    SELECT order_id, item_id, buyer_id, spec_name, spec_value,
+                           quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at
+                    FROM orders
+                    WHERE order_status = 'pending_ship'
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                    ''', (limit,))
+
+                orders = []
+                for row in cursor.fetchall():
+                    orders.append({
+                        'id': row[0],
+                        'order_id': row[0],
+                        'item_id': row[1],
+                        'buyer_id': row[2],
+                        'spec_name': row[3],
+                        'spec_value': row[4],
+                        'quantity': row[5],
+                        'amount': row[6],
+                        'status': row[7],
+                        'cookie_id': row[8],
+                        'is_bargain': bool(row[9]) if row[9] is not None else False,
+                        'created_at': row[10],
+                        'updated_at': row[11]
+                    })
+
+                logger.info(f"查询到 {len(orders)} 个待发货订单" + (f" (账号: {cookie_id})" if cookie_id else ""))
+                return orders
+
+            except Exception as e:
+                logger.error(f"获取待发货订单列表失败: {e}")
                 return []
 
     def delete_table_record(self, table_name: str, record_id: str):
