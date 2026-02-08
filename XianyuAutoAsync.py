@@ -1203,7 +1203,13 @@ class XianyuLive:
                     for i in range(quantity_to_send):
                         try:
                             # 每次调用都可能获取不同的内容（API卡券、批量数据等）
-                            delivery_content = await self._auto_delivery(item_id, item_title, order_id, send_user_id)
+                            delivery_content = await self._auto_delivery(
+                                item_id,
+                                item_title,
+                                order_id,
+                                send_user_id,
+                                chat_id=chat_id
+                            )
                             if delivery_content:
                                 delivery_contents.append(delivery_content)
                                 success_count += 1
@@ -1748,7 +1754,7 @@ class XianyuLive:
                     # user_id=f"{self.cookie_id}_{int(time.time() * 1000)}",  # 使用唯一ID避免冲突
                     user_id=f"{self.cookie_id}",  # 使用唯一ID避免冲突
                     enable_learning=True,  # 启用学习功能
-                    headless=True  # 使用无头模式
+                    headless=False  # 可视化模式，便于观察滑块验证过程(总开关)
                 )
 
                 # 在线程池中执行滑块验证
@@ -2122,7 +2128,7 @@ class XianyuLive:
             username = account_info.get('username', '')
             password = account_info.get('password', '')
             # show_browser = account_info.get('show_browser', False)  # 如果需要显示浏览器，请取消注释这行并确保在配置文件中正确设置
-            # 显示浏览器（设置。headless设置。总开关）
+            # 显示浏览器（设置。headless设置>>>密码登录刷新 Cookie”流程的开关）
             show_browser = False
             
             # 检查是否配置了用户名和密码
@@ -4501,7 +4507,8 @@ class XianyuLive:
                 logger.error(f"【{self.cookie_id}】获取订单详情异常: {self._safe_str(e)}")
                 return None
 
-    async def _auto_delivery(self, item_id: str, item_title: str = None, order_id: str = None, send_user_id: str = None):
+    async def _auto_delivery(self, item_id: str, item_title: str = None, order_id: str = None,
+                             send_user_id: str = None, chat_id: str = None):
         """自动发货功能 - 获取卡券规则，执行延时，确认发货，发送内容"""
         try:
             from db_manager import db_manager
@@ -4726,12 +4733,14 @@ class XianyuLive:
                         logger.warning(f"Cookie ID {self.cookie_id} 不存在于cookies表中，丢弃订单 {order_id}")
                     else:
                         existing_order = db_manager.get_order_by_id(order_id)
-                        if not existing_order:
+                        need_save_order = (not existing_order) or (chat_id and not (existing_order.get('chat_id') if existing_order else None))
+                        if need_save_order:
                             # 插入基本订单信息
                             success = db_manager.insert_or_update_order(
                                 order_id=order_id,
                                 item_id=item_id,
                                 buyer_id=send_user_id,
+                                chat_id=chat_id,
                                 cookie_id=self.cookie_id
                             )
                             
@@ -5628,20 +5637,46 @@ class XianyuLive:
                                 # 执行自动发货
                                 try:
                                     logger.info(f"【{self.cookie_id}】开始自动发货: 订单={order_id}, 商品={item_id}, 买家={buyer_id}")
-                                    await self._auto_delivery(
+                                    chat_id = order.get('chat_id')
+
+                                    if not chat_id:
+                                        logger.warning(f"【{self.cookie_id}】订单 {order_id} 缺少chat_id，跳过轮询发货，等待实时消息补全")
+                                        continue
+
+                                    if not self.ws:
+                                        logger.warning(f"【{self.cookie_id}】WebSocket不可用，跳过订单 {order_id} 的轮询发货")
+                                        continue
+
+                                    delivery_content = await self._auto_delivery(
                                         item_id=item_id,
                                         item_title=None,  # 会在_auto_delivery内部查询
                                         order_id=order_id,
-                                        send_user_id=buyer_id
+                                        send_user_id=buyer_id,
+                                        chat_id=chat_id
                                     )
-                                    
-                                    # 只有当_auto_delivery成功返回（或处理完毕）后，才标记为已发货
-                                    # 注意：如果是订单状态错误等情况返回了，虽然没有发货，但也应该跳过避免重复报错
-                                    # 实际的发货成功标记（self.delivery_sent_orders.add）目前在_auto_delivery内部并没有做
-                                    # 建议：如果是成功的发货，应该在这里记录
+
+                                    if not delivery_content:
+                                        logger.warning(f"【{self.cookie_id}】订单 {order_id} 未获取到发货内容，跳过发送")
+                                        continue
+
+                                    if delivery_content.startswith("__IMAGE_SEND__"):
+                                        image_data = delivery_content.replace("__IMAGE_SEND__", "")
+                                        card_id = None
+                                        image_url = image_data
+                                        if "|" in image_data:
+                                            card_id_str, image_url = image_data.split("|", 1)
+                                            try:
+                                                card_id = int(card_id_str)
+                                            except ValueError:
+                                                logger.error(f"【{self.cookie_id}】订单 {order_id} 图片卡券ID无效: {card_id_str}")
+                                        await self.send_image_msg(self.ws, chat_id, buyer_id, image_url, card_id=card_id)
+                                        logger.info(f"【{self.cookie_id}】订单 {order_id} 轮询发货已发送图片")
+                                    else:
+                                        await self.send_msg(self.ws, chat_id, buyer_id, delivery_content)
+                                        logger.info(f"【{self.cookie_id}】订单 {order_id} 轮询发货已发送文本内容")
+
                                     self.delivery_sent_orders.add(order_id)
-                                    
-                                    logger.info(f"【{self.cookie_id}】订单 {order_id} 自动发货流程结束")
+                                    logger.info(f"【{self.cookie_id}】订单 {order_id} 轮询自动发货完成")
                                 except Exception as e:
                                     logger.error(f"【{self.cookie_id}】订单 {order_id} 自动发货失败: {self._safe_str(e)}")
                                     import traceback
@@ -7813,6 +7848,7 @@ class XianyuLive:
                                 order_id=order_id,
                                 item_id=item_id,
                                 buyer_id=send_user_id,
+                                chat_id=chat_id,
                                 cookie_id=self.cookie_id,
                                 is_bargain=True
                             )

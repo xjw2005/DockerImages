@@ -1974,7 +1974,7 @@ class XianyuSliderStealth:
                     if not context: # 如果是ElementHandle但没有owner_frame属性(新版playwright可能不同)，尝试使用page
                          context = self.page
 
-                    js_rect = await context.evaluate("""(elements) => {
+                    js_rect = context.evaluate("""(elements) => {
                         const [btn, track] = elements;
                         const btnRect = btn.getBoundingClientRect();
                         const trackRect = track.getBoundingClientRect();
@@ -2008,7 +2008,7 @@ class XianyuSliderStealth:
                 context = slider_button.owner_frame if hasattr(slider_button, 'owner_frame') else self.page
                 if not context: context = self.page
 
-                precise_distance = await context.evaluate("""
+                precise_distance = context.evaluate("""
                     () => {
                         const button = document.querySelector('#nc_1_n1z') || document.querySelector('.nc_iconfont') || document.querySelector('[id*="nc_1_n1z"]');
                         const track = document.querySelector('#nc_1_n1t') || document.querySelector('.nc_scale') || document.querySelector('[id*="nc_1_n1t"]');

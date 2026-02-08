@@ -222,6 +222,7 @@ class DBManager:
                 order_id TEXT PRIMARY KEY,
                 item_id TEXT,
                 buyer_id TEXT,
+                chat_id TEXT,
                 spec_name TEXT,
                 spec_value TEXT,
                 quantity TEXT,
@@ -243,6 +244,14 @@ class DBManager:
                 logger.info("正在为 orders 表添加 is_bargain 列...")
                 self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN is_bargain INTEGER DEFAULT 0")
                 logger.info("orders 表 is_bargain 列添加完成")
+
+            # 检查并添加 chat_id 列（用于轮询自动发货发送消息）
+            try:
+                self._execute_sql(cursor, "SELECT chat_id FROM orders LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("正在为 orders 表添加 chat_id 列...")
+                self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN chat_id TEXT")
+                logger.info("orders 表 chat_id 列添加完成")
 
             # 检查并添加 user_id 列（用于数据库迁移）
             try:
@@ -4611,6 +4620,7 @@ class DBManager:
                 return [], []
 
     def insert_or_update_order(self, order_id: str, item_id: str = None, buyer_id: str = None,
+                              chat_id: str = None,
                               spec_name: str = None, spec_value: str = None, quantity: str = None,
                               amount: str = None, order_status: str = None, cookie_id: str = None,
                               is_bargain: bool = None):
@@ -4642,6 +4652,9 @@ class DBManager:
                     if buyer_id is not None:
                         update_fields.append("buyer_id = ?")
                         update_values.append(buyer_id)
+                    if chat_id is not None:
+                        update_fields.append("chat_id = ?")
+                        update_values.append(chat_id)
                     if spec_name is not None:
                         update_fields.append("spec_name = ?")
                         update_values.append(spec_name)
@@ -4674,10 +4687,10 @@ class DBManager:
                 else:
                     # 插入新订单
                     cursor.execute('''
-                    INSERT INTO orders (order_id, item_id, buyer_id, spec_name, spec_value,
+                    INSERT INTO orders (order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
                                       quantity, amount, order_status, cookie_id, is_bargain)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (order_id, item_id, buyer_id, spec_name, spec_value,
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
                           quantity, amount, order_status or 'unknown', cookie_id,
                           1 if is_bargain else 0))
                     logger.info(f"插入新订单: {order_id}")
@@ -4696,7 +4709,7 @@ class DBManager:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                SELECT order_id, item_id, buyer_id, spec_name, spec_value,
+                SELECT order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
                        quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at
                 FROM orders WHERE order_id = ?
                 ''', (order_id,))
@@ -4708,15 +4721,16 @@ class DBManager:
                         'order_id': row[0],
                         'item_id': row[1],
                         'buyer_id': row[2],
-                        'spec_name': row[3],
-                        'spec_value': row[4],
-                        'quantity': row[5],
-                        'amount': row[6],
-                        'status': row[7],
-                        'cookie_id': row[8],
-                        'is_bargain': bool(row[9]) if row[9] is not None else False,
-                        'created_at': row[10],
-                        'updated_at': row[11]
+                        'chat_id': row[3],
+                        'spec_name': row[4],
+                        'spec_value': row[5],
+                        'quantity': row[6],
+                        'amount': row[7],
+                        'status': row[8],
+                        'cookie_id': row[9],
+                        'is_bargain': bool(row[10]) if row[10] is not None else False,
+                        'created_at': row[11],
+                        'updated_at': row[12]
                     }
                 return None
 
@@ -4746,7 +4760,7 @@ class DBManager:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                SELECT order_id, item_id, buyer_id, spec_name, spec_value,
+                SELECT order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
                        quantity, amount, order_status, is_bargain, created_at, updated_at
                 FROM orders WHERE cookie_id = ?
                 ORDER BY created_at DESC LIMIT ?
@@ -4759,14 +4773,15 @@ class DBManager:
                         'order_id': row[0],
                         'item_id': row[1],
                         'buyer_id': row[2],
-                        'spec_name': row[3],
-                        'spec_value': row[4],
-                        'quantity': row[5],
-                        'amount': row[6],
-                        'status': row[7],
-                        'is_bargain': bool(row[8]) if row[8] is not None else False,
-                        'created_at': row[9],
-                        'updated_at': row[10]
+                        'chat_id': row[3],
+                        'spec_name': row[4],
+                        'spec_value': row[5],
+                        'quantity': row[6],
+                        'amount': row[7],
+                        'status': row[8],
+                        'is_bargain': bool(row[9]) if row[9] is not None else False,
+                        'created_at': row[10],
+                        'updated_at': row[11]
                     })
 
                 return orders
@@ -4781,7 +4796,7 @@ class DBManager:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                SELECT order_id, item_id, buyer_id, spec_name, spec_value,
+                SELECT order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
                        quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at
                 FROM orders
                 ORDER BY created_at DESC LIMIT ?
@@ -4794,15 +4809,16 @@ class DBManager:
                         'order_id': row[0],
                         'item_id': row[1],
                         'buyer_id': row[2],
-                        'spec_name': row[3],
-                        'spec_value': row[4],
-                        'quantity': row[5],
-                        'amount': row[6],
-                        'status': row[7],
-                        'cookie_id': row[8],
-                        'is_bargain': bool(row[9]) if row[9] is not None else False,
-                        'created_at': row[10],
-                        'updated_at': row[11]
+                        'chat_id': row[3],
+                        'spec_name': row[4],
+                        'spec_value': row[5],
+                        'quantity': row[6],
+                        'amount': row[7],
+                        'status': row[8],
+                        'cookie_id': row[9],
+                        'is_bargain': bool(row[10]) if row[10] is not None else False,
+                        'created_at': row[11],
+                        'updated_at': row[12]
                     })
 
                 return orders
@@ -4828,7 +4844,7 @@ class DBManager:
 
                 if cookie_id:
                     cursor.execute('''
-                    SELECT order_id, item_id, buyer_id, spec_name, spec_value,
+                    SELECT order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
                            quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at
                     FROM orders
                     WHERE order_status = 'pending_ship' AND cookie_id = ?
@@ -4837,7 +4853,7 @@ class DBManager:
                     ''', (cookie_id, limit))
                 else:
                     cursor.execute('''
-                    SELECT order_id, item_id, buyer_id, spec_name, spec_value,
+                    SELECT order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
                            quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at
                     FROM orders
                     WHERE order_status = 'pending_ship'
@@ -4852,15 +4868,16 @@ class DBManager:
                         'order_id': row[0],
                         'item_id': row[1],
                         'buyer_id': row[2],
-                        'spec_name': row[3],
-                        'spec_value': row[4],
-                        'quantity': row[5],
-                        'amount': row[6],
-                        'status': row[7],
-                        'cookie_id': row[8],
-                        'is_bargain': bool(row[9]) if row[9] is not None else False,
-                        'created_at': row[10],
-                        'updated_at': row[11]
+                        'chat_id': row[3],
+                        'spec_name': row[4],
+                        'spec_value': row[5],
+                        'quantity': row[6],
+                        'amount': row[7],
+                        'status': row[8],
+                        'cookie_id': row[9],
+                        'is_bargain': bool(row[10]) if row[10] is not None else False,
+                        'created_at': row[11],
+                        'updated_at': row[12]
                     })
 
                 logger.info(f"查询到 {len(orders)} 个待发货订单" + (f" (账号: {cookie_id})" if cookie_id else ""))
