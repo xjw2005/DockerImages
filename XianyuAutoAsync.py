@@ -692,6 +692,11 @@ class XianyuLive:
         self.token_refresh_task = None
         self.connection_restart_flag = False  # 连接重启标志
 
+        # 连接状态追踪（用于智能判断是否清空token）
+        self.connection_start_time = 0  # WebSocket连接建立的时间
+        self.last_connection_duration = 0  # 上一次连接的持续时间
+        self.consecutive_quick_disconnects = 0  # 连续快速断开的次数（可能是token问题）
+
         # 通知防重复机制
         self.last_notification_time = {}  # 记录每种通知类型的最后发送时间
         self.notification_cooldown = 300  # 5分钟内不重复发送相同类型的通知
@@ -728,6 +733,13 @@ class XianyuLive:
         self.polling_delivery_interval = 60  # 1分钟轮询一次（秒）
         self.last_polling_delivery_time = 0
         self.polling_delivery_enabled = True  # 是否启用轮询自动发货功能
+
+        # 轮询发货日志降噪（避免无订单时每分钟都打印日志）
+        self.last_polling_has_orders = None  # 上次轮询是否有订单（None/True/False）
+        self.last_polling_summary_time = 0  # 上次打印统计信息的时间
+        self.polling_summary_interval = 3600  # 定期打印统计信息的间隔（1小时）
+        self.polling_scan_count = 0  # 累计扫描次数
+        self.polling_delivered_count = 0  # 累计发货次数
 
         # 扫码登录Cookie刷新标志
         self.last_qr_cookie_refresh_time = 0  # 记录上次扫码登录Cookie刷新时间
@@ -1331,6 +1343,65 @@ class XianyuLive:
         except Exception as e:
             logger.error(f"统一自动发货处理异常: {self._safe_str(e)}")
 
+
+
+    def should_clear_token_on_disconnect(self) -> tuple[bool, str]:
+        """智能判断WebSocket断开时是否应该清空token
+
+        Returns:
+            tuple[bool, str]: (是否清空token, 原因说明)
+        """
+        # 如果没有token，无需判断
+        if not self.current_token:
+            return False, "当前没有token"
+
+        current_time = time.time()
+
+        # 1. 检查token年龄（最重要的判断）
+        token_age = current_time - self.last_token_refresh_time
+        token_remaining_ratio = 1 - (token_age / self.token_refresh_interval)
+
+        # Token已过期或即将过期（剩余有效期 < 5%）
+        if token_age >= self.token_refresh_interval * 0.95:
+            return True, f"Token接近过期或已过期（年龄:{int(token_age)}秒，有效期:{int(self.token_refresh_interval)}秒）"
+
+        # 2. 检查连接存活时间（判断是否是快速断开）
+        connection_duration = 0
+        if self.connection_start_time > 0:
+            connection_duration = current_time - self.connection_start_time
+            self.last_connection_duration = connection_duration
+
+        # 连接不到60秒就断开，可能是认证问题
+        if connection_duration > 0 and connection_duration < 60:
+            self.consecutive_quick_disconnects += 1
+            logger.warning(f"【{self.cookie_id}】连接快速断开（持续{int(connection_duration)}秒），连续快速断开次数: {self.consecutive_quick_disconnects}")
+
+            # 如果连续3次快速断开，可能是token问题
+            if self.consecutive_quick_disconnects >= 3:
+                self.consecutive_quick_disconnects = 0  # 重置计数
+                return True, f"连续{self.consecutive_quick_disconnects}次快速断开，可能是token失效"
+            else:
+                # 前两次快速断开，先保留token尝试
+                return False, f"第{self.consecutive_quick_disconnects}次快速断开，先保留token尝试重连"
+        else:
+            # 连接存活超过60秒，重置快速断开计数
+            if connection_duration > 60:
+                self.consecutive_quick_disconnects = 0
+
+        # 3. 检查重连失败次数
+        if self.connection_failures >= 5:
+            return True, f"多次重连失败（{self.connection_failures}次），尝试刷新token"
+
+        # 4. Token还很新鲜（< 30分钟），大概率是网络问题
+        if token_age < 1800:  # 30分钟
+            return False, f"Token很新鲜（年龄:{int(token_age)}秒，剩余{int(token_remaining_ratio*100)}%有效期），保留用于重连"
+
+        # 5. Token有一定年龄但未过期，连接正常运行后断开，大概率是网络问题
+        if connection_duration > 300:  # 连接运行超过5分钟
+            return False, f"连接正常运行{int(connection_duration)}秒后断开，保留token（年龄:{int(token_age)}秒）"
+
+        # 6. 默认策略：Token还在有效期内，保留
+        return False, f"Token还在有效期内（剩余{int(token_remaining_ratio*100)}%），保留用于重连"
 
 
     async def refresh_token(self, captcha_retry_count: int = 0):
@@ -5208,23 +5279,39 @@ class XianyuLive:
         await ws.send(json.dumps(msg))
 
     async def init(self, ws):
+        """初始化WebSocket连接并发送注册消息"""
         # 如果没有token或者token过期，获取新token
         token_refresh_attempted = False
+        old_token = self.current_token  # 保存旧token，以防刷新失败时使用
+
         if not self.current_token or (time.time() - self.last_token_refresh_time) >= self.token_refresh_interval:
             logger.info(f"【{self.cookie_id}】获取初始token...")
             token_refresh_attempted = True
 
             await self.refresh_token()
 
+        # 检查token状态
         if not self.current_token:
-            logger.error("无法获取有效token，初始化失败")
-            # 只有在没有尝试刷新token的情况下才发送通知，避免与refresh_token中的通知重复
-            if not token_refresh_attempted:
-                await self.send_token_refresh_notification("初始化时无法获取有效Token", "token_init_failed")
-            else:
-                logger.info("由于刚刚尝试过token刷新，跳过重复的初始化失败通知")
-            raise Exception("Token获取失败")
+            # 如果 refresh_token 因冷却而跳过，且旧token还在有效期内
+            if old_token and hasattr(self, 'last_token_refresh_status') and self.last_token_refresh_status == "skipped_cooldown":
+                token_age = time.time() - self.last_token_refresh_time
+                if token_age < self.token_refresh_interval:
+                    logger.warning(f"【{self.cookie_id}】Token刷新在冷却期内被跳过，使用旧token继续（年龄:{int(token_age)}秒）")
+                    self.current_token = old_token
+                else:
+                    logger.error(f"【{self.cookie_id}】旧token已过期（年龄:{int(token_age)}秒），无法使用")
 
+            # 最终检查：如果还是没有token，则初始化失败
+            if not self.current_token:
+                logger.error("无法获取有效token，初始化失败")
+                # 只有在没有尝试刷新token的情况下才发送通知，避免与refresh_token中的通知重复
+                if not token_refresh_attempted:
+                    await self.send_token_refresh_notification("初始化时无法获取有效Token", "token_init_failed")
+                else:
+                    logger.info("由于刚刚尝试过token刷新，跳过重复的初始化失败通知")
+                raise Exception("Token获取失败")
+
+        # 发送注册消息
         msg = {
             "lwp": "/reg",
             "headers": {
@@ -5639,43 +5726,88 @@ class XianyuLive:
 
                     # 检查是否到达轮询时间
                     if current_time - self.last_polling_delivery_time >= self.polling_delivery_interval:
-                        logger.info(f"【{self.cookie_id}】开始轮询扫描待发货订单...")
+                        self.polling_scan_count += 1  # 累计扫描次数
 
                         # 查询待发货订单
                         from db_manager import db_manager
                         pending_orders = db_manager.get_pending_delivery_orders(self.cookie_id)
 
-                        if pending_orders:
-                            logger.info(f"【{self.cookie_id}】发现 {len(pending_orders)} 个待发货订单")
+                        has_orders = len(pending_orders) > 0
 
+                        # 【日志降噪】只在状态变化时打印，或定期打印统计
+                        should_log_scan = False
+                        if self.last_polling_has_orders is None:
+                            # 首次扫描，总是打印
+                            should_log_scan = True
+                        elif self.last_polling_has_orders != has_orders:
+                            # 状态变化（有订单↔无订单），打印
+                            should_log_scan = True
+                        elif has_orders:
+                            # 有订单时，每次都打印（重要）
+                            should_log_scan = True
+                        elif current_time - self.last_polling_summary_time >= self.polling_summary_interval:
+                            # 定期打印统计信息（每小时）
+                            should_log_scan = True
+                            self.last_polling_summary_time = current_time
+
+                        if should_log_scan:
+                            if has_orders:
+                                logger.info(f"【{self.cookie_id}】🔍 轮询扫描: 发现 {len(pending_orders)} 个待发货订单")
+                            else:
+                                # 无订单时，打印统计信息
+                                logger.debug(f"【{self.cookie_id}】📊 轮询统计: 已扫描{self.polling_scan_count}次，累计发货{self.polling_delivered_count}个订单，当前无待发货订单")
+
+                        self.last_polling_has_orders = has_orders
+
+                        if pending_orders:
                             # 遍历待发货订单
+                            skipped_count = 0  # 跳过的订单数（用于汇总日志）
+                            delivered_count = 0  # 本轮发货数
+
+                            # 统计各种跳过原因（降噪用）
+                            skip_reasons = {
+                                'no_chat_id': 0,
+                                'cooldown': 0,
+                                'already_sent': 0,
+                                'no_websocket': 0,
+                                'no_content': 0
+                            }
+
                             for order in pending_orders:
                                 order_id = order['order_id']
                                 item_id = order['item_id']
                                 buyer_id = order['buyer_id']
+                                chat_id = order.get('chat_id')
+
+                                # 【预检查】先检查所有跳过条件，不打印详细日志
+                                skip_reason = None
 
                                 # 检查冷却期（防重复发货）
                                 if not self.can_auto_delivery(order_id):
-                                    logger.info(f"【{self.cookie_id}】订单 {order_id} 在冷却期内，跳过")
-                                    continue
-
+                                    skip_reason = 'cooldown'
+                                    skip_reasons['cooldown'] += 1
                                 # 检查是否已经发货过（防止重复）
-                                if order_id in self.delivery_sent_orders:
-                                    logger.info(f"【{self.cookie_id}】订单 {order_id} 已发货过，跳过")
+                                elif order_id in self.delivery_sent_orders:
+                                    skip_reason = 'already_sent'
+                                    skip_reasons['already_sent'] += 1
+                                # 检查是否缺少chat_id
+                                elif not chat_id:
+                                    skip_reason = 'no_chat_id'
+                                    skip_reasons['no_chat_id'] += 1
+                                # 检查WebSocket
+                                elif not self.ws:
+                                    skip_reason = 'no_websocket'
+                                    skip_reasons['no_websocket'] += 1
+
+                                # 如果有跳过原因，静默跳过（不打印单个订单日志）
+                                if skip_reason:
+                                    skipped_count += 1
+                                    logger.debug(f"【{self.cookie_id}】订单 {order_id} 跳过（原因:{skip_reason}）")
                                     continue
 
-                                # 执行自动发货
+                                # 【真正开始处理】只有通过所有检查的订单才打印"开始自动发货"
                                 try:
-                                    logger.info(f"【{self.cookie_id}】开始自动发货: 订单={order_id}, 商品={item_id}, 买家={buyer_id}")
-                                    chat_id = order.get('chat_id')
-
-                                    if not chat_id:
-                                        logger.warning(f"【{self.cookie_id}】订单 {order_id} 缺少chat_id，跳过轮询发货，等待实时消息补全")
-                                        continue
-
-                                    if not self.ws:
-                                        logger.warning(f"【{self.cookie_id}】WebSocket不可用，跳过订单 {order_id} 的轮询发货")
-                                        continue
+                                    logger.info(f"【{self.cookie_id}】📦 开始自动发货: 订单={order_id}, 商品={item_id}, 买家={buyer_id}")
 
                                     delivery_content = await self._auto_delivery(
                                         item_id=item_id,
@@ -5687,6 +5819,8 @@ class XianyuLive:
 
                                     if not delivery_content:
                                         logger.warning(f"【{self.cookie_id}】订单 {order_id} 未获取到发货内容，跳过发送")
+                                        skipped_count += 1
+                                        skip_reasons['no_content'] += 1
                                         continue
 
                                     if delivery_content.startswith("__IMAGE_SEND__"):
@@ -5700,19 +5834,37 @@ class XianyuLive:
                                             except ValueError:
                                                 logger.error(f"【{self.cookie_id}】订单 {order_id} 图片卡券ID无效: {card_id_str}")
                                         await self.send_image_msg(self.ws, chat_id, buyer_id, image_url, card_id=card_id)
-                                        logger.info(f"【{self.cookie_id}】订单 {order_id} 轮询发货已发送图片")
+                                        logger.info(f"【{self.cookie_id}】✅ 订单 {order_id} 轮询发货成功（图片）")
                                     else:
                                         await self.send_msg(self.ws, chat_id, buyer_id, delivery_content)
-                                        logger.info(f"【{self.cookie_id}】订单 {order_id} 轮询发货已发送文本内容")
+                                        logger.info(f"【{self.cookie_id}】✅ 订单 {order_id} 轮询发货成功（文本）")
 
                                     self.mark_delivery_sent(order_id)
-                                    logger.info(f"【{self.cookie_id}】订单 {order_id} 轮询自动发货完成")
+                                    delivered_count += 1
+                                    self.polling_delivered_count += 1
+
                                 except Exception as e:
-                                    logger.error(f"【{self.cookie_id}】订单 {order_id} 自动发货失败: {self._safe_str(e)}")
+                                    logger.error(f"【{self.cookie_id}】❌ 订单 {order_id} 自动发货失败: {self._safe_str(e)}")
                                     import traceback
                                     logger.error(f"【{self.cookie_id}】详细错误: {traceback.format_exc()}")
-                        else:
-                            logger.info(f"【{self.cookie_id}】没有待发货订单")
+                                    skipped_count += 1
+
+                            # 汇总本轮结果（详细显示跳过原因）
+                            if delivered_count > 0 or skipped_count > 0:
+                                skip_detail = []
+                                if skip_reasons['no_chat_id'] > 0:
+                                    skip_detail.append(f"缺少chat_id:{skip_reasons['no_chat_id']}")
+                                if skip_reasons['cooldown'] > 0:
+                                    skip_detail.append(f"冷却期:{skip_reasons['cooldown']}")
+                                if skip_reasons['already_sent'] > 0:
+                                    skip_detail.append(f"已发货:{skip_reasons['already_sent']}")
+                                if skip_reasons['no_websocket'] > 0:
+                                    skip_detail.append(f"WebSocket不可用:{skip_reasons['no_websocket']}")
+                                if skip_reasons['no_content'] > 0:
+                                    skip_detail.append(f"无发货内容:{skip_reasons['no_content']}")
+
+                                skip_summary = f"，原因统计: {' | '.join(skip_detail)}" if skip_detail else ""
+                                logger.info(f"【{self.cookie_id}】📋 本轮结果: 发货{delivered_count}个，跳过{skipped_count}个{skip_summary}")
 
                         # 更新最后轮询时间
                         self.last_polling_delivery_time = current_time
@@ -8039,6 +8191,9 @@ class XianyuLive:
                         self.ws = websocket
                         logger.info(f"【{self.cookie_id}】WebSocket连接建立成功，开始初始化...")
 
+                        # 记录连接建立时间（用于智能判断是否清空token）
+                        self.connection_start_time = time.time()
+
                         try:
                             # 开始初始化
                             await self.init(websocket)
@@ -8235,10 +8390,13 @@ class XianyuLive:
                     logger.warning(f"【{self.cookie_id}】将在 {retry_delay} 秒后重试连接...")
 
                     try:
-                        # 清空当前token，确保重新连接时会重新获取
-                        if self.current_token:
-                            logger.warning(f"【{self.cookie_id}】清空当前token，重新连接时将重新获取")
+                        # 【智能Token管理】判断是否需要清空token
+                        should_clear, reason = self.should_clear_token_on_disconnect()
+                        if should_clear:
+                            logger.warning(f"【{self.cookie_id}】决定清空token - 原因: {reason}")
                             self.current_token = None
+                        else:
+                            logger.info(f"【{self.cookie_id}】保留现有token - 原因: {reason}")
 
                         # 直接重置任务引用，不等待取消（快速重连方案）
                         # 这样可以避免等待任务取消导致的阻塞问题
