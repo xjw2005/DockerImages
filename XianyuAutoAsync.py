@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 import re
 import time
@@ -725,7 +725,7 @@ class XianyuLive:
 
         # 轮询自动发货任务
         self.polling_delivery_task = None
-        self.polling_delivery_interval = 300  # 5分钟轮询一次（秒）
+        self.polling_delivery_interval = 60  # 1分钟轮询一次（秒）
         self.last_polling_delivery_time = 0
         self.polling_delivery_enabled = True  # 是否启用轮询自动发货功能
 
@@ -4523,7 +4523,7 @@ class XianyuLive:
         try:
             from db_manager import db_manager
 
-            logger.debug(f"开始自动发货检查: 商品ID={item_id}")
+            logger.info(f"开始自动发货检查: 商品ID={item_id}")
 
             # 获取商品详细信息
             item_info = None
@@ -4532,7 +4532,7 @@ class XianyuLive:
             if item_id and item_id != "未知商品":
                 # 直接从数据库获取商品信息（发货时不再调用API）
                 try:
-                    logger.debug(f"从数据库获取商品信息: {item_id}")
+                    logger.info(f"从数据库获取商品信息: {item_id}")
                     db_item_info = db_manager.get_item_info(self.cookie_id, item_id)
                     if db_item_info:
                         # 拼接商品标题和详情作为搜索文本
@@ -4545,14 +4545,14 @@ class XianyuLive:
                             auto_fetch_config = config.get('ITEM_DETAIL', {}).get('auto_fetch', {})
 
                             if auto_fetch_config.get('enabled', True):
-                                logger.debug(f"数据库中商品详情为空，尝试自动获取: {item_id}")
+                                logger.info(f"数据库中商品详情为空，尝试自动获取: {item_id}")
                                 try:
                                     fetched_detail = await self.fetch_item_detail_from_api(item_id)
                                     if fetched_detail:
                                         # 保存获取到的详情
                                         await self.save_item_detail_only(item_id, fetched_detail)
                                         item_detail_db = fetched_detail
-                                        logger.debug(f"成功获取并保存商品详情: {item_id}")
+                                        logger.info(f"成功获取并保存商品详情: {item_id}")
                                     else:
                                         logger.warning(f"未能获取到商品详情: {item_id}")
                                 except Exception as api_e:
@@ -4569,8 +4569,8 @@ class XianyuLive:
 
                         if search_parts:
                             search_text = ' '.join(search_parts)
-                            logger.debug(f"使用数据库商品标题+详情作为搜索文本: 标题='{item_title_db}', 详情长度={len(item_detail_db)}")
-                            logger.debug(f"完整搜索文本: {search_text[:200]}...")
+                            logger.info(f"使用数据库商品标题+详情作为搜索文本: 标题='{item_title_db}', 详情长度={len(item_detail_db)}")
+                            logger.warning(f"完整搜索文本: {search_text[:200]}...")
                         else:
                             logger.warning(f"数据库中商品标题和详情都为空: {item_id}")
                             search_text = item_title or item_id
@@ -4585,7 +4585,7 @@ class XianyuLive:
             if not search_text:
                 search_text = item_id or "未知商品"
 
-            logger.debug(f"使用搜索文本匹配发货规则: {search_text[:100]}...")
+            logger.info(f"使用搜索文本匹配发货规则: {search_text[:100]}...")
 
             # 检查商品是否为多规格商品
             is_multi_spec = db_manager.get_item_multi_spec_status(self.cookie_id, item_id)
@@ -4594,7 +4594,7 @@ class XianyuLive:
 
             # 如果是多规格商品且有订单ID，获取规格信息
             if is_multi_spec and order_id:
-                logger.debug(f"检测到多规格商品，获取订单规格信息: {order_id}")
+                logger.info(f"检测到多规格商品，获取订单规格信息: {order_id}")
                 try:
                     order_detail = await self.fetch_order_detail_info(order_id, item_id, send_user_id)
                     # 确保order_detail是字典类型
@@ -4602,7 +4602,7 @@ class XianyuLive:
                         spec_name = order_detail.get('spec_name', '')
                         spec_value = order_detail.get('spec_value', '')
                         if spec_name and spec_value:
-                            logger.debug(f"获取到规格信息: {spec_name} = {spec_value}")
+                            logger.info(f"获取到规格信息: {spec_name} = {spec_value}")
                         else:
                             logger.warning(f"未能获取到规格信息，将跳过自动发货")
                             return None
@@ -4619,13 +4619,13 @@ class XianyuLive:
             if is_multi_spec:
                 # 多规格商品：只匹配多规格发货规则
                 if spec_name and spec_value:
-                    logger.debug(f"多规格商品，尝试匹配多规格发货规则: {search_text[:50]}... [{spec_name}:{spec_value}]")
+                    logger.info(f"多规格商品，尝试匹配多规格发货规则: {search_text[:50]}... [{spec_name}:{spec_value}]")
                     delivery_rules = db_manager.get_delivery_rules_by_keyword_and_spec(search_text, spec_name, spec_value)
                     # 过滤只保留多规格卡券
                     delivery_rules = [r for r in delivery_rules if r.get('is_multi_spec')]
                     
                     if delivery_rules:
-                        logger.debug(f"✅ 找到匹配的多规格发货规则: {len(delivery_rules)}个")
+                        logger.info(f"✅ 找到匹配的多规格发货规则: {len(delivery_rules)}个")
                     else:
                         logger.warning(f"❌ 多规格商品未找到匹配的多规格发货规则，跳过自动发货")
                         return None
@@ -4634,13 +4634,13 @@ class XianyuLive:
                     return None
             else:
                 # 非多规格商品：只匹配非多规格发货规则
-                logger.debug(f"非多规格商品，尝试匹配普通发货规则: {search_text[:50]}...")
+                logger.info(f"非多规格商品，尝试匹配普通发货规则: {search_text[:50]}...")
                 delivery_rules = db_manager.get_delivery_rules_by_keyword(search_text)
                 # 过滤只保留非多规格卡券
                 delivery_rules = [r for r in delivery_rules if not r.get('is_multi_spec')]
                 
                 if delivery_rules:
-                    logger.debug(f"✅ 找到匹配的普通发货规则: {len(delivery_rules)}个")
+                    logger.info(f"✅ 找到匹配的普通发货规则: {len(delivery_rules)}个")
                 else:
                     logger.warning(f"❌ 非多规格商品未找到匹配的普通发货规则，跳过自动发货")
                     return None
@@ -5639,24 +5639,15 @@ class XianyuLive:
 
                     # 检查是否到达轮询时间
                     if current_time - self.last_polling_delivery_time >= self.polling_delivery_interval:
+                        logger.info(f"【{self.cookie_id}】开始轮询扫描待发货订单...")
+
                         # 查询待发货订单
                         from db_manager import db_manager
                         pending_orders = db_manager.get_pending_delivery_orders(self.cookie_id)
-                        debug_mode = LOG_CONFIG.get('level', '').upper() == 'DEBUG'
-                        stats = {
-                            "total": len(pending_orders) if pending_orders else 0,
-                            "success": 0,
-                            "image_sent": 0,
-                            "text_sent": 0,
-                            "cooldown_skip": 0,
-                            "already_sent_skip": 0,
-                            "missing_chat_id": 0,
-                            "ws_unavailable": 0,
-                            "no_content": 0,
-                            "failed": 0,
-                        }
 
                         if pending_orders:
+                            logger.info(f"【{self.cookie_id}】发现 {len(pending_orders)} 个待发货订单")
+
                             # 遍历待发货订单
                             for order in pending_orders:
                                 order_id = order['order_id']
@@ -5665,24 +5656,25 @@ class XianyuLive:
 
                                 # 检查冷却期（防重复发货）
                                 if not self.can_auto_delivery(order_id):
-                                    stats["cooldown_skip"] += 1
+                                    logger.info(f"【{self.cookie_id}】订单 {order_id} 在冷却期内，跳过")
                                     continue
 
                                 # 检查是否已经发货过（防止重复）
                                 if order_id in self.delivery_sent_orders:
-                                    stats["already_sent_skip"] += 1
+                                    logger.info(f"【{self.cookie_id}】订单 {order_id} 已发货过，跳过")
                                     continue
 
                                 # 执行自动发货
                                 try:
+                                    logger.info(f"【{self.cookie_id}】开始自动发货: 订单={order_id}, 商品={item_id}, 买家={buyer_id}")
                                     chat_id = order.get('chat_id')
 
                                     if not chat_id:
-                                        stats["missing_chat_id"] += 1
+                                        logger.warning(f"【{self.cookie_id}】订单 {order_id} 缺少chat_id，跳过轮询发货，等待实时消息补全")
                                         continue
 
                                     if not self.ws:
-                                        stats["ws_unavailable"] += 1
+                                        logger.warning(f"【{self.cookie_id}】WebSocket不可用，跳过订单 {order_id} 的轮询发货")
                                         continue
 
                                     delivery_content = await self._auto_delivery(
@@ -5694,7 +5686,7 @@ class XianyuLive:
                                     )
 
                                     if not delivery_content:
-                                        stats["no_content"] += 1
+                                        logger.warning(f"【{self.cookie_id}】订单 {order_id} 未获取到发货内容，跳过发送")
                                         continue
 
                                     if delivery_content.startswith("__IMAGE_SEND__"):
@@ -5708,28 +5700,19 @@ class XianyuLive:
                                             except ValueError:
                                                 logger.error(f"【{self.cookie_id}】订单 {order_id} 图片卡券ID无效: {card_id_str}")
                                         await self.send_image_msg(self.ws, chat_id, buyer_id, image_url, card_id=card_id)
-                                        stats["image_sent"] += 1
+                                        logger.info(f"【{self.cookie_id}】订单 {order_id} 轮询发货已发送图片")
                                     else:
                                         await self.send_msg(self.ws, chat_id, buyer_id, delivery_content)
-                                        stats["text_sent"] += 1
+                                        logger.info(f"【{self.cookie_id}】订单 {order_id} 轮询发货已发送文本内容")
 
                                     self.mark_delivery_sent(order_id)
-                                    stats["success"] += 1
+                                    logger.info(f"【{self.cookie_id}】订单 {order_id} 轮询自动发货完成")
                                 except Exception as e:
-                                    stats["failed"] += 1
-                                    # 失败细节保留，但只打印前3条，避免同轮刷屏
-                                    if stats["failed"] <= 3:
-                                        logger.error(f"【{self.cookie_id}】订单 {order_id} 自动发货失败: {self._safe_str(e)}")
-                                    elif debug_mode:
-                                        logger.debug(f"【{self.cookie_id}】订单 {order_id} 自动发货失败(抑制后续详情): {self._safe_str(e)}")
-
-                        # 每轮输出一条摘要，既保留状态也降低噪声
-                        logger.info(
-                            f"【{self.cookie_id}】轮询发货摘要: total={stats['total']}, success={stats['success']}, "
-                            f"image={stats['image_sent']}, text={stats['text_sent']}, cooldown_skip={stats['cooldown_skip']}, "
-                            f"already_sent_skip={stats['already_sent_skip']}, missing_chat_id={stats['missing_chat_id']}, "
-                            f"ws_unavailable={stats['ws_unavailable']}, no_content={stats['no_content']}, failed={stats['failed']}"
-                        )
+                                    logger.error(f"【{self.cookie_id}】订单 {order_id} 自动发货失败: {self._safe_str(e)}")
+                                    import traceback
+                                    logger.error(f"【{self.cookie_id}】详细错误: {traceback.format_exc()}")
+                        else:
+                            logger.info(f"【{self.cookie_id}】没有待发货订单")
 
                         # 更新最后轮询时间
                         self.last_polling_delivery_time = current_time
@@ -5983,12 +5966,52 @@ class XianyuLive:
             real_cookies_str = '; '.join([f"{k}={v}" for k, v in real_cookies_dict.items()])
 
             logger.info(f"【{target_cookie_id}】真实Cookie已获取，包含 {len(real_cookies_dict)} 个字段")
-            logger.info(f"【{target_cookie_id}】Cookie字符串长度: {len(real_cookies_str)}")
-
-            # 关键字段采用摘要统计，避免逐条刷屏
+            
+            # 打印扫码登录获取的真实Cookie字段详情
+            logger.info(f"【{target_cookie_id}】========== 扫码登录真实Cookie字段详情 ==========")
+            logger.info(f"【{target_cookie_id}】Cookie字段数: {len(real_cookies_dict)}")
+            logger.info(f"【{target_cookie_id}】Cookie字段列表:")
+            for i, (key, value) in enumerate(real_cookies_dict.items(), 1):
+                if len(str(value)) > 50:
+                    logger.info(f"【{target_cookie_id}】  {i:2d}. {key}: {str(value)[:30]}...{str(value)[-20:]} (长度: {len(str(value))})")
+                else:
+                    logger.info(f"【{target_cookie_id}】  {i:2d}. {key}: {value}")
+            
+            # 检查关键字段
             important_keys = ['unb', '_m_h5_tk', '_m_h5_tk_enc', 'cookie2', 't', 'sgcookie', 'cna']
-            present_keys = [k for k in important_keys if real_cookies_dict.get(k)]
-            missing_keys = [k for k in important_keys if not real_cookies_dict.get(k)]
+            logger.info(f"【{target_cookie_id}】关键字段检查:")
+            for key in important_keys:
+                if key in real_cookies_dict:
+                    val = real_cookies_dict[key]
+                    logger.info(f"【{target_cookie_id}】  ✅ {key}: {'存在' if val else '为空'} (长度: {len(str(val)) if val else 0})")
+                else:
+                    logger.info(f"【{target_cookie_id}】  ❌ {key}: 缺失")
+            logger.info(f"【{target_cookie_id}】==========================================")
+
+            # 打印完整的真实Cookie内容
+            logger.info(f"【{target_cookie_id}】=== 完整真实Cookie内容 ===")
+            logger.info(f"【{target_cookie_id}】Cookie字符串长度: {len(real_cookies_str)}")
+            logger.info(f"【{target_cookie_id}】Cookie完整内容:")
+            logger.info(f"【{target_cookie_id}】{real_cookies_str}")
+
+            # 打印所有Cookie字段的详细信息
+            logger.info(f"【{target_cookie_id}】=== Cookie字段详细信息 ===")
+            for i, (name, value) in enumerate(real_cookies_dict.items(), 1):
+                # 对于长值，显示前后部分
+                if len(value) > 50:
+                    display_value = f"{value[:20]}...{value[-20:]}"
+                else:
+                    display_value = value
+                logger.info(f"【{target_cookie_id}】{i:2d}. {name}: {display_value}")
+
+            # 打印原始扫码Cookie对比
+            logger.info(f"【{target_cookie_id}】=== 扫码Cookie对比 ===")
+            logger.info(f"【{target_cookie_id}】扫码Cookie长度: {len(qr_cookies_str)}")
+            logger.info(f"【{target_cookie_id}】扫码Cookie字段数: {len(qr_cookies_dict)}")
+            logger.info(f"【{target_cookie_id}】真实Cookie长度: {len(real_cookies_str)}")
+            logger.info(f"【{target_cookie_id}】真实Cookie字段数: {len(real_cookies_dict)}")
+            logger.info(f"【{target_cookie_id}】长度增加: {len(real_cookies_str) - len(qr_cookies_str)} 字符")
+            logger.info(f"【{target_cookie_id}】字段增加: {len(real_cookies_dict) - len(qr_cookies_dict)} 个")
 
             # 检查Cookie变化
             changed_cookies = []
@@ -6000,22 +6023,38 @@ class XianyuLive:
                 elif old_value != new_value:
                     changed_cookies.append(name)
 
-            # 显示Cookie变化统计（仅列举前10个）
+            # 显示Cookie变化统计
             if changed_cookies:
-                logger.info(f"【{target_cookie_id}】发生变化的Cookie字段 ({len(changed_cookies)}个): {', '.join(changed_cookies[:10])}")
+                logger.info(f"【{target_cookie_id}】发生变化的Cookie字段 ({len(changed_cookies)}个): {', '.join(changed_cookies)}")
             if new_cookies:
-                logger.info(f"【{target_cookie_id}】新增的Cookie字段 ({len(new_cookies)}个): {', '.join(new_cookies[:10])}")
+                logger.info(f"【{target_cookie_id}】新增的Cookie字段 ({len(new_cookies)}个): {', '.join(new_cookies)}")
             if not changed_cookies and not new_cookies:
                 logger.info(f"【{target_cookie_id}】Cookie无变化")
 
-            logger.info(
-                f"【{target_cookie_id}】扫码Cookie摘要: "
-                f"qr_fields={len(qr_cookies_dict)}, real_fields={len(real_cookies_dict)}, "
-                f"delta_fields={len(real_cookies_dict) - len(qr_cookies_dict)}, "
-                f"delta_len={len(real_cookies_str) - len(qr_cookies_str)}, "
-                f"important_ok={len(present_keys)}/{len(important_keys)}, "
-                f"important_missing={','.join(missing_keys) if missing_keys else 'none'}"
-            )
+            # 打印重要Cookie字段的完整详情
+            important_cookies = ['_m_h5_tk', '_m_h5_tk_enc', 'cookie2', 't', 'sgcookie', 'unb', 'uc1', 'uc3', 'uc4']
+            logger.info(f"【{target_cookie_id}】=== 重要Cookie字段完整详情 ===")
+            for cookie_name in important_cookies:
+                if cookie_name in real_cookies_dict:
+                    cookie_value = real_cookies_dict[cookie_name]
+
+                    # 标记是否发生了变化
+                    change_mark = " [已变化]" if cookie_name in changed_cookies else " [新增]" if cookie_name in new_cookies else " [无变化]"
+
+                    # 显示完整的cookie值
+                    logger.info(f"【{target_cookie_id}】{cookie_name}{change_mark}:")
+                    logger.info(f"【{target_cookie_id}】  值: {cookie_value}")
+                    logger.info(f"【{target_cookie_id}】  长度: {len(cookie_value)}")
+
+                    # 如果有对应的扫码cookie值，显示对比
+                    if cookie_name in qr_cookies_dict:
+                        old_value = qr_cookies_dict[cookie_name]
+                        if old_value != cookie_value:
+                            logger.info(f"【{target_cookie_id}】  原值: {old_value}")
+                            logger.info(f"【{target_cookie_id}】  原长度: {len(old_value)}")
+                    logger.info(f"【{target_cookie_id}】  ---")
+                else:
+                    logger.info(f"【{target_cookie_id}】{cookie_name}: [不存在]")
 
             # 保存真实Cookie到数据库
             from db_manager import db_manager
@@ -6307,16 +6346,16 @@ class XianyuLive:
             real_cookies_str = '; '.join([f"{k}={v}" for k, v in real_cookies_dict.items()])
 
             logger.info(f"【{self.cookie_id}】真实Cookie已获取，包含 {len(real_cookies_dict)} 个字段")
-            logger.info(f"【{self.cookie_id}】真实Cookie字符串长度: {len(real_cookies_str)}")
-            # 检查关键字段（摘要）
+            logger.info(f"【{self.cookie_id}】真实Cookie: {real_cookies_str}")
+            # 检查关键字段
             important_keys = ['unb', '_m_h5_tk', '_m_h5_tk_enc', 'cookie2', 't', 'sgcookie', 'cna']
-            present_keys = [k for k in important_keys if real_cookies_dict.get(k)]
-            missing_keys = [k for k in important_keys if not real_cookies_dict.get(k)]
-            logger.info(
-                f"【{self.cookie_id}】关键字段摘要: "
-                f"ok={len(present_keys)}/{len(important_keys)}, "
-                f"missing={','.join(missing_keys) if missing_keys else 'none'}"
-            )
+            logger.info(f"【{self.cookie_id}】关键字段检查:")
+            for key in important_keys:
+                if key in real_cookies_dict:
+                    val = real_cookies_dict[key]
+                    logger.info(f"【{self.cookie_id}】  ✅ {key}: {'存在' if val else '为空'} (长度: {len(str(val)) if val else 0})")
+                else:
+                    logger.info(f"【{self.cookie_id}】  ❌ {key}: 缺失")
 
             # 检查Cookie是否有有效更新
             changed_cookies = []
@@ -6648,18 +6687,24 @@ class XianyuLive:
             if not changed_cookies and not new_cookies:
                 logger.info(f"【{self.cookie_id}】Cookie无变化")
 
-            # 降噪：不打印完整Cookie，仅记录长度，避免日志膨胀与敏感信息泄露
-            logger.info(f"【{self.cookie_id}】更新后Cookie字符串长度: {len(self.cookies_str)}")
+            # 打印完整的更新后Cookie（可选择性启用）
+            logger.info(f"【{self.cookie_id}】更新后的完整Cookie: {self.cookies_str}")
 
-            # 重要字段改为单行摘要，避免逐字段刷屏
+            # 打印主要的Cookie字段详情
             important_cookies = ['_m_h5_tk', '_m_h5_tk_enc', 'cookie2', 't', 'sgcookie', 'unb', 'uc1', 'uc3', 'uc4']
-            important_present = [k for k in important_cookies if new_cookies_dict.get(k)]
-            important_changed = [k for k in important_present if k in changed_cookies or k in new_cookies]
-            logger.info(
-                f"【{self.cookie_id}】重要Cookie摘要: "
-                f"ok={len(important_present)}/{len(important_cookies)}, "
-                f"changed={','.join(important_changed) if important_changed else 'none'}"
-            )
+            logger.info(f"【{self.cookie_id}】重要Cookie字段详情:")
+            for cookie_name in important_cookies:
+                if cookie_name in new_cookies_dict:
+                    cookie_value = new_cookies_dict[cookie_name]
+                    # 对于敏感信息，只显示前后几位
+                    if len(cookie_value) > 20:
+                        display_value = f"{cookie_value[:8]}...{cookie_value[-8:]}"
+                    else:
+                        display_value = cookie_value
+
+                    # 标记是否发生了变化
+                    change_mark = " [已变化]" if cookie_name in changed_cookies else " [新增]" if cookie_name in new_cookies else ""
+                    logger.info(f"【{self.cookie_id}】  {cookie_name}: {display_value}{change_mark}")
 
             # 更新数据库中的Cookie
             await self.update_config_cookies()
