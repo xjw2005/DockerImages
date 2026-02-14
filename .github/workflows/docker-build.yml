@@ -38,7 +38,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile  # 如果你的文件名是 Dockerfile-cn，请改名或在这里指定
+          file: ./Dockerfile-cn  # 如果你的文件名是 Dockerfile-cn，请改名或在这里指定
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
