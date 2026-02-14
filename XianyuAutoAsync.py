@@ -3535,14 +3535,16 @@ class XianyuLive:
                 item_info = {
                     'title': '商品信息获取失败',
                     'price': 0,
-                    'desc': '暂无商品描述'
+                    'desc': '暂无商品描述',
+                    'item_prompt': ''
                 }
             else:
                 # 解析数据库中的商品信息
                 item_info = {
                     'title': item_info_raw.get('item_title', '未知商品'),
                     'price': self._parse_price(item_info_raw.get('item_price', '0')),
-                    'desc': item_info_raw.get('item_detail', '暂无商品描述')
+                    'desc': item_info_raw.get('item_detail', '暂无商品描述'),
+                    'item_prompt': item_info_raw.get('item_prompt', '')
                 }
 
             # 生成AI回复

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { CheckSquare, Download, Edit2, ExternalLink, Loader2, Package, RefreshCw, Search, Square, Trash2, X } from 'lucide-react'
-import { batchDeleteItems, deleteItem, fetchAllItemsFromAccount, getItems, updateItem, updateItemMultiQuantityDelivery, updateItemMultiSpec } from '@/api/items'
+import { Bot, CheckSquare, Download, Edit2, ExternalLink, Loader2, Package, RefreshCw, Search, Square, Trash2, X } from 'lucide-react'
+import { batchDeleteItems, deleteItem, fetchAllItemsFromAccount, getItems, updateItem, updateItemPrompt, updateItemMultiQuantityDelivery, updateItemMultiSpec } from '@/api/items'
 import { getAccounts } from '@/api/accounts'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'
@@ -23,6 +23,9 @@ export function Items() {
   const [editingItem, setEditingItem] = useState<Item | null>(null)
   const [editDetail, setEditDetail] = useState('')
   const [editSaving, setEditSaving] = useState(false)
+  const [promptEditingItem, setPromptEditingItem] = useState<Item | null>(null)
+  const [editPrompt, setEditPrompt] = useState('')
+  const [promptSaving, setPromptSaving] = useState(false)
 
   const loadItems = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) {
@@ -188,6 +191,26 @@ export function Items() {
       addToast({ type: 'error', message: '更新失败' })
     } finally {
       setEditSaving(false)
+    }
+  }
+
+  const handleEditPrompt = (item: Item) => {
+    setPromptEditingItem(item)
+    setEditPrompt(item.item_prompt || '')
+  }
+
+  const handleSavePrompt = async () => {
+    if (!promptEditingItem) return
+    setPromptSaving(true)
+    try {
+      await updateItemPrompt(promptEditingItem.cookie_id, promptEditingItem.item_id, editPrompt)
+      addToast({ type: 'success', message: 'AI提示词已更新' })
+      setPromptEditingItem(null)
+      await loadItems()
+    } catch {
+      addToast({ type: 'error', message: 'AI提示词更新失败' })
+    } finally {
+      setPromptSaving(false)
     }
   }
 
@@ -406,6 +429,17 @@ export function Items() {
                     <td className="sticky right-0 bg-white dark:bg-slate-900">
                       <div className="flex gap-1">
                         <button
+                          onClick={() => handleEditPrompt(item)}
+                          className={`table-action-btn ${
+                            item.item_prompt?.trim()
+                              ? 'hover:!bg-emerald-50 dark:hover:!bg-emerald-900/20'
+                              : 'hover:!bg-slate-100 dark:hover:!bg-slate-800'
+                          }`}
+                          title={item.item_prompt?.trim() ? '编辑AI提示词（已配置）' : '添加AI提示词'}
+                        >
+                          <Bot className={`w-4 h-4 ${item.item_prompt?.trim() ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500'}`} />
+                        </button>
+                        <button
                           onClick={() => handleEdit(item)}
                           className="table-action-btn hover:!bg-blue-50"
                           title="编辑"
@@ -483,6 +517,76 @@ export function Items() {
                 disabled={editSaving}
               >
                 {editSaving ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    保存中...
+                  </span>
+                ) : (
+                  '保存'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI提示词弹窗 */}
+      {promptEditingItem && (
+        <div className="modal-overlay">
+          <div className="modal-content max-w-2xl">
+            <div className="modal-header">
+              <h2 className="modal-title">编辑商品AI提示词</h2>
+              <button onClick={() => setPromptEditingItem(null)} className="modal-close">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="modal-body space-y-4">
+              <div className="input-group">
+                <label className="input-label">商品ID</label>
+                <input
+                  type="text"
+                  value={promptEditingItem.item_id}
+                  disabled
+                  className="input-ios bg-slate-100 dark:bg-slate-700"
+                />
+              </div>
+              <div className="input-group">
+                <label className="input-label">商品标题</label>
+                <input
+                  type="text"
+                  value={promptEditingItem.item_title || promptEditingItem.title || ''}
+                  disabled
+                  className="input-ios bg-slate-100 dark:bg-slate-700"
+                />
+              </div>
+              <div className="input-group">
+                <label className="input-label">AI回复提示词</label>
+                <textarea
+                  value={editPrompt}
+                  onChange={(e) => setEditPrompt(e.target.value)}
+                  className="input-ios h-48 resize-none"
+                  placeholder="输入该商品专属的AI提示词。留空表示不使用商品专属提示词。"
+                />
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  该提示词会追加到系统提示词中，仅对当前商品生效。
+                </p>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                onClick={() => setPromptEditingItem(null)}
+                className="btn-ios-secondary"
+                disabled={promptSaving}
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSavePrompt}
+                className="btn-ios-primary"
+                disabled={promptSaving}
+              >
+                {promptSaving ? (
                   <span className="flex items-center gap-2">
                     <Loader2 className="w-4 h-4 animate-spin" />
                     保存中...

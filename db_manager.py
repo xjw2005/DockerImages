@@ -292,6 +292,7 @@ class DBManager:
                 item_category TEXT,
                 item_price TEXT,
                 item_detail TEXT,
+                item_prompt TEXT DEFAULT '',
                 is_multi_spec BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -308,6 +309,14 @@ class DBManager:
                 logger.info("正在为 item_info 表添加 multi_quantity_delivery 列...")
                 self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN multi_quantity_delivery BOOLEAN DEFAULT FALSE")
                 logger.info("item_info 表 multi_quantity_delivery 列添加完成")
+
+            # 检查并添加 item_prompt 列（用于商品专属提示词）
+            try:
+                self._execute_sql(cursor, "SELECT item_prompt FROM item_info LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("正在为 item_info 表添加 item_prompt 列...")
+                self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN item_prompt TEXT DEFAULT ''")
+                logger.info("item_info 表 item_prompt 列添加完成")
 
             # 创建自动发货规则表
             cursor.execute('''
@@ -755,6 +764,13 @@ class DBManager:
                     # 多数量发货字段不存在，需要添加
                     self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN multi_quantity_delivery BOOLEAN DEFAULT FALSE")
                     logger.info("为item_info表添加多数量发货字段")
+
+                # 为item_info表添加商品专属提示词字段（如果不存在）
+                try:
+                    self._execute_sql(cursor, "SELECT item_prompt FROM item_info LIMIT 1")
+                except sqlite3.OperationalError:
+                    self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN item_prompt TEXT DEFAULT ''")
+                    logger.info("为item_info表添加item_prompt字段")
 
                 # 检查orders表是否有is_bargain字段
                 try:
@@ -3799,7 +3815,8 @@ class DBManager:
 
     def save_item_basic_info(self, cookie_id: str, item_id: str, item_title: str = None,
                             item_description: str = None, item_category: str = None,
-                            item_price: str = None, item_detail: str = None) -> bool:
+                            item_price: str = None, item_detail: str = None,
+                            item_prompt: str = None) -> bool:
         """保存或更新商品基本信息，使用原子操作避免并发问题
 
         Args:
@@ -3810,6 +3827,7 @@ class DBManager:
             item_category: 商品分类
             item_price: 商品价格
             item_detail: 商品详情JSON
+            item_prompt: 商品专属提示词
 
         Returns:
             bool: 操作是否成功
@@ -3822,10 +3840,10 @@ class DBManager:
                 # 首先尝试插入，如果已存在则忽略
                 cursor.execute('''
                 INSERT OR IGNORE INTO item_info (cookie_id, item_id, item_title, item_description,
-                                               item_category, item_price, item_detail, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                               item_category, item_price, item_detail, item_prompt, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ''', (cookie_id, item_id, item_title or '', item_description or '',
-                      item_category or '', item_price or '', item_detail or ''))
+                      item_category or '', item_price or '', item_detail or '', item_prompt or ''))
 
                 # 如果是新插入的记录，直接返回成功
                 if cursor.rowcount > 0:
@@ -3858,6 +3876,11 @@ class DBManager:
                 if item_detail:
                     update_parts.append("item_detail = CASE WHEN (item_detail IS NULL OR item_detail = '' OR TRIM(item_detail) = '') THEN ? ELSE item_detail END")
                     params.append(item_detail)
+
+                # 对于item_prompt，只有在现有值为空时才更新
+                if item_prompt:
+                    update_parts.append("item_prompt = CASE WHEN (item_prompt IS NULL OR item_prompt = '' OR TRIM(item_prompt) = '') THEN ? ELSE item_prompt END")
+                    params.append(item_prompt)
 
                 if update_parts:
                     update_parts.append("updated_at = CURRENT_TIMESTAMP")
@@ -3934,7 +3957,7 @@ class DBManager:
                             cursor.execute('''
                             UPDATE item_info SET
                                 item_title = ?, item_description = ?, item_category = ?,
-                                item_price = ?, item_detail = ?, updated_at = CURRENT_TIMESTAMP
+                                item_price = ?, item_detail = ?, item_prompt = ?, updated_at = CURRENT_TIMESTAMP
                             WHERE cookie_id = ? AND item_id = ?
                             ''', (
                                 item_data.get('title', ''),
@@ -3942,6 +3965,7 @@ class DBManager:
                                 item_data.get('category', ''),
                                 item_data.get('price', ''),
                                 json.dumps(item_data, ensure_ascii=False),
+                                item_data.get('item_prompt', ''),
                                 cookie_id, item_id
                             ))
                         logger.info(f"更新商品信息（覆盖）: {item_id}")
@@ -3961,15 +3985,16 @@ class DBManager:
                         # 处理字典类型的详情数据（向后兼容）
                         cursor.execute('''
                         INSERT INTO item_info (cookie_id, item_id, item_title, item_description,
-                                             item_category, item_price, item_detail)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                                             item_category, item_price, item_detail, item_prompt)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (
                             cookie_id, item_id,
                             item_data.get('title', '') if item_data else '',
                             item_data.get('description', '') if item_data else '',
                             item_data.get('category', '') if item_data else '',
                             item_data.get('price', '') if item_data else '',
-                            json.dumps(item_data, ensure_ascii=False) if item_data else ''
+                            json.dumps(item_data, ensure_ascii=False) if item_data else '',
+                            item_data.get('item_prompt', '') if item_data else ''
                         ))
                     logger.info(f"新增商品信息: {item_id}")
 
@@ -4178,13 +4203,16 @@ class DBManager:
             logger.error(f"获取所有商品信息失败: {e}")
             return []
 
-    def update_item_detail(self, cookie_id: str, item_id: str, item_detail: str) -> bool:
-        """更新商品详情（不覆盖商品标题等基本信息）
+    def update_item_detail(self, cookie_id: str, item_id: str,
+                          item_detail: Optional[str] = None,
+                          item_prompt: Optional[str] = None) -> bool:
+        """更新商品详情和商品专属提示词（不覆盖商品标题等基本信息）
 
         Args:
             cookie_id: Cookie ID
             item_id: 商品ID
             item_detail: 商品详情JSON字符串
+            item_prompt: 商品专属提示词
 
         Returns:
             bool: 操作是否成功
@@ -4192,23 +4220,38 @@ class DBManager:
         try:
             with self.lock:
                 cursor = self.conn.cursor()
-                # 只更新item_detail字段，不影响其他字段
-                cursor.execute('''
-                UPDATE item_info SET
-                    item_detail = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE cookie_id = ? AND item_id = ?
-                ''', (item_detail, cookie_id, item_id))
+
+                update_parts = []
+                params = []
+
+                if item_detail is not None:
+                    update_parts.append("item_detail = ?")
+                    params.append(item_detail)
+
+                if item_prompt is not None:
+                    update_parts.append("item_prompt = ?")
+                    params.append(item_prompt)
+
+                if not update_parts:
+                    logger.warning(f"更新商品信息失败：未提供更新字段 {item_id}")
+                    return False
+
+                update_parts.append("updated_at = CURRENT_TIMESTAMP")
+                params.extend([cookie_id, item_id])
+
+                sql = f"UPDATE item_info SET {', '.join(update_parts)} WHERE cookie_id = ? AND item_id = ?"
+                cursor.execute(sql, params)
 
                 if cursor.rowcount > 0:
                     self.conn.commit()
-                    logger.info(f"更新商品详情成功: {item_id}")
+                    logger.info(f"更新商品信息成功: {item_id}")
                     return True
                 else:
                     logger.warning(f"未找到要更新的商品: {item_id}")
                     return False
 
         except Exception as e:
-            logger.error(f"更新商品详情失败: {e}")
+            logger.error(f"更新商品信息失败: {e}")
             self.conn.rollback()
             return False
 
@@ -4229,20 +4272,21 @@ class DBManager:
                 # 使用 INSERT OR REPLACE 确保记录存在，但只更新标题字段
                 cursor.execute('''
                 INSERT INTO item_info (cookie_id, item_id, item_title, item_description,
-                                     item_category, item_price, item_detail, created_at, updated_at)
+                                     item_category, item_price, item_detail, item_prompt, created_at, updated_at)
                 VALUES (?, ?, ?,
                        COALESCE((SELECT item_description FROM item_info WHERE cookie_id = ? AND item_id = ?), ''),
                        COALESCE((SELECT item_category FROM item_info WHERE cookie_id = ? AND item_id = ?), ''),
                        COALESCE((SELECT item_price FROM item_info WHERE cookie_id = ? AND item_id = ?), ''),
                        COALESCE((SELECT item_detail FROM item_info WHERE cookie_id = ? AND item_id = ?), ''),
+                       COALESCE((SELECT item_prompt FROM item_info WHERE cookie_id = ? AND item_id = ?), ''),
                        COALESCE((SELECT created_at FROM item_info WHERE cookie_id = ? AND item_id = ?), CURRENT_TIMESTAMP),
                        CURRENT_TIMESTAMP)
                 ON CONFLICT(cookie_id, item_id) DO UPDATE SET
                     item_title = excluded.item_title,
                     updated_at = CURRENT_TIMESTAMP
                 ''', (cookie_id, item_id, item_title,
-                      cookie_id, item_id, cookie_id, item_id, cookie_id, item_id,
-                      cookie_id, item_id, cookie_id, item_id))
+                       cookie_id, item_id, cookie_id, item_id, cookie_id, item_id,
+                      cookie_id, item_id, cookie_id, item_id, cookie_id, item_id))
 
                 self.conn.commit()
                 logger.info(f"更新商品标题成功: {item_id} - {item_title}")
@@ -4282,6 +4326,7 @@ class DBManager:
                         item_category = item_data.get('item_category', '')
                         item_price = item_data.get('item_price', '')
                         item_detail = item_data.get('item_detail', '')
+                        item_prompt = item_data.get('item_prompt', '')
 
                         if not cookie_id or not item_id:
                             continue
@@ -4294,10 +4339,10 @@ class DBManager:
                         # 使用 INSERT OR IGNORE + UPDATE 模式
                         cursor.execute('''
                         INSERT OR IGNORE INTO item_info (cookie_id, item_id, item_title, item_description,
-                                                       item_category, item_price, item_detail, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                                                       item_category, item_price, item_detail, item_prompt, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                         ''', (cookie_id, item_id, item_title, item_description,
-                              item_category, item_price, item_detail))
+                              item_category, item_price, item_detail, item_prompt))
 
                         if cursor.rowcount == 0:
                             # 记录已存在，进行条件更新
@@ -4308,6 +4353,7 @@ class DBManager:
                                 item_category = CASE WHEN (item_category IS NULL OR item_category = '') AND ? != '' THEN ? ELSE item_category END,
                                 item_price = CASE WHEN (item_price IS NULL OR item_price = '') AND ? != '' THEN ? ELSE item_price END,
                                 item_detail = CASE WHEN (item_detail IS NULL OR item_detail = '' OR TRIM(item_detail) = '') AND ? != '' THEN ? ELSE item_detail END,
+                                item_prompt = CASE WHEN (item_prompt IS NULL OR item_prompt = '' OR TRIM(item_prompt) = '') AND ? != '' THEN ? ELSE item_prompt END,
                                 updated_at = CURRENT_TIMESTAMP
                             WHERE cookie_id = ? AND item_id = ?
                             '''
@@ -4317,6 +4363,7 @@ class DBManager:
                                 item_category, item_category,
                                 item_price, item_price,
                                 item_detail, item_detail,
+                                item_prompt, item_prompt,
                                 cookie_id, item_id
                             ))
 

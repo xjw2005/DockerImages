@@ -4674,7 +4674,8 @@ def get_item_detail(cookie_id: str, item_id: str, current_user: Dict[str, Any] =
 
 
 class ItemDetailUpdate(BaseModel):
-    item_detail: str
+    item_detail: Optional[str] = None
+    item_prompt: Optional[str] = None
 
 
 @app.put("/items/{cookie_id}/{item_id}")
@@ -4684,7 +4685,7 @@ def update_item_detail(
     update_data: ItemDetailUpdate,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """更新商品详情"""
+    """更新商品详情和商品专属提示词"""
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
@@ -4694,9 +4695,17 @@ def update_item_detail(
         if cookie_id not in user_cookies:
             raise HTTPException(status_code=403, detail="无权限操作该Cookie")
 
-        success = db_manager.update_item_detail(cookie_id, item_id, update_data.item_detail)
+        if update_data.item_detail is None and update_data.item_prompt is None:
+            raise HTTPException(status_code=400, detail="至少提供 item_detail 或 item_prompt 其中一个字段")
+
+        success = db_manager.update_item_detail(
+            cookie_id,
+            item_id,
+            item_detail=update_data.item_detail,
+            item_prompt=update_data.item_prompt
+        )
         if success:
-            return {"message": "商品详情更新成功"}
+            return {"message": "商品信息更新成功"}
         else:
             raise HTTPException(status_code=400, detail="更新失败")
     except HTTPException:
@@ -4878,7 +4887,8 @@ def test_ai_reply(cookie_id: str, test_data: dict, _: None = Depends(require_aut
         test_item_info = {
             'title': test_data.get('item_title', '测试商品'),
             'price': test_data.get('item_price', 100),
-            'desc': test_data.get('item_desc', '这是一个测试商品')
+            'desc': test_data.get('item_desc', '这是一个测试商品'),
+            'item_prompt': test_data.get('item_prompt', '')
         }
 
         # 生成测试回复（跳过等待时间）

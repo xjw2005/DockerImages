@@ -355,6 +355,14 @@ class AIReplyEngine:
                 # 6. 构建提示词
                 custom_prompts = json.loads(settings['custom_prompts']) if settings['custom_prompts'] else {}
                 system_prompt = custom_prompts.get(intent, self.default_prompts[intent])
+                item_prompt = item_info.get('item_prompt', '')
+                if item_prompt is None:
+                    item_prompt = ''
+                elif not isinstance(item_prompt, str):
+                    item_prompt = str(item_prompt)
+                item_prompt = item_prompt.strip()
+                if item_prompt:
+                    system_prompt = f"{system_prompt}\n\n商品专属提示词：\n{item_prompt}"
 
                 # 7. 构建商品信息
                 item_desc = f"商品标题: {item_info.get('title', '未知')}\n"

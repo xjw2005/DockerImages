@@ -35,6 +35,11 @@ export const updateItem = (cookieId: string, itemId: string, data: Partial<Item>
   return put(`/items/${cookieId}/${itemId}`, data)
 }
 
+// 更新商品AI提示词
+export const updateItemPrompt = (cookieId: string, itemId: string, itemPrompt: string): Promise<ApiResponse> => {
+  return put(`/items/${cookieId}/${itemId}`, { item_prompt: itemPrompt })
+}
+
 // 获取商品回复列表
 export const getItemReplies = async (cookieId?: string): Promise<{ success: boolean; data: ItemReply[] }> => {
   const params = cookieId ? `/cookie/${cookieId}` : ''

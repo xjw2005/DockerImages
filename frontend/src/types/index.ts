@@ -68,6 +68,7 @@ export interface Item {
   desc?: string
   item_description?: string
   item_detail?: string
+  item_prompt?: string
   item_category?: string
   price?: string
   item_price?: string
