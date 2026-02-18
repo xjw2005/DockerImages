@@ -67,9 +67,6 @@ export function Accounts() {
   // AI设置状态
   const [aiSettingsAccount, setAiSettingsAccount] = useState<AccountWithKeywordCount | null>(null)
   const [aiEnabled, setAiEnabled] = useState(false)
-  const [aiMaxDiscountPercent, setAiMaxDiscountPercent] = useState(10)
-  const [aiMaxDiscountAmount, setAiMaxDiscountAmount] = useState(100)
-  const [aiMaxBargainRounds, setAiMaxBargainRounds] = useState(3)
   const [aiCustomPrompts, setAiCustomPrompts] = useState('')
   const [aiSettingsSaving, setAiSettingsSaving] = useState(false)
   const [aiSettingsLoading, setAiSettingsLoading] = useState(false)
@@ -510,9 +507,6 @@ export function Accounts() {
     try {
       const settings = await getAIReplySettings(account.id)
       setAiEnabled(settings.ai_enabled ?? settings.enabled ?? false)
-      setAiMaxDiscountPercent(settings.max_discount_percent ?? 10)
-      setAiMaxDiscountAmount(settings.max_discount_amount ?? 100)
-      setAiMaxBargainRounds(settings.max_bargain_rounds ?? 3)
       setAiCustomPrompts(settings.custom_prompts ?? '')
     } catch {
       addToast({ type: 'error', message: '加载AI设置失败' })
@@ -527,9 +521,6 @@ export function Accounts() {
       setAiSettingsSaving(true)
       await updateAIReplySettings(aiSettingsAccount.id, {
         enabled: aiEnabled,
-        max_discount_percent: aiMaxDiscountPercent,
-        max_discount_amount: aiMaxDiscountAmount,
-        max_bargain_rounds: aiMaxBargainRounds,
         custom_prompts: aiCustomPrompts,
       })
       // 更新本地状态
@@ -1237,43 +1228,6 @@ export function Accounts() {
                     />
                   </div>
 
-                  <div className="border-t border-slate-200 dark:border-slate-700 pt-4 mt-2">
-                    <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">议价设置</h3>
-                    <div className="grid grid-cols-3 gap-3">
-                      <div className="input-group">
-                        <label className="input-label text-xs">最大折扣(%)</label>
-                        <input
-                          type="number"
-                          value={aiMaxDiscountPercent}
-                          onChange={(e) => setAiMaxDiscountPercent(Number(e.target.value))}
-                          className="input-ios"
-                          min="0"
-                          max="100"
-                        />
-                      </div>
-                      <div className="input-group">
-                        <label className="input-label text-xs">最大减价(元)</label>
-                        <input
-                          type="number"
-                          value={aiMaxDiscountAmount}
-                          onChange={(e) => setAiMaxDiscountAmount(Number(e.target.value))}
-                          className="input-ios"
-                          min="0"
-                        />
-                      </div>
-                      <div className="input-group">
-                        <label className="input-label text-xs">最大议价轮数</label>
-                        <input
-                          type="number"
-                          value={aiMaxBargainRounds}
-                          onChange={(e) => setAiMaxBargainRounds(Number(e.target.value))}
-                          className="input-ios"
-                          min="1"
-                          max="10"
-                        />
-                      </div>
-                    </div>
-                  </div>
 
                   <div className="input-group">
                     <label className="input-label">自定义提示词 (JSON格式)</label>
@@ -1281,10 +1235,10 @@ export function Accounts() {
                       value={aiCustomPrompts}
                       onChange={(e) => setAiCustomPrompts(e.target.value)}
                       className="input-ios h-32 resize-none font-mono text-xs"
-                      placeholder='{"classify": "分类提示词", "price": "议价提示词", "tech": "技术提示词", "default": "默认提示词"}'
+                      placeholder='{"default": "默认提示词"}'
                     />
                     <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                      留空使用系统默认提示词。格式：{`{"classify": "...", "price": "...", "tech": "...", "default": "..."}`}
+                      留空使用系统默认提示词。格式：{`{"default": "..."}`}
                     </p>
                   </div>
                 </>
