@@ -4742,9 +4742,6 @@ class AIReplySettings(BaseModel):
     model_name: str = "qwen-plus"
     api_key: str = ""
     base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    max_discount_percent: int = 10
-    max_discount_amount: int = 100
-    max_bargain_rounds: int = 3
     custom_prompts: str = ""
 
 
