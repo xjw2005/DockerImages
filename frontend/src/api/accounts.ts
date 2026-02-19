@@ -9,7 +9,6 @@ export const getAccounts = async (): Promise<Account[]> => {
     id, 
     cookie: '', 
     enabled: true,
-    use_ai_reply: false,
     use_default_reply: false,
     auto_confirm: false
   }))
@@ -40,7 +39,6 @@ export const getAccountDetails = async (): Promise<AccountDetail[]> => {
     username: item.username,
     login_password: item.login_password,
     show_browser: item.show_browser,
-    use_ai_reply: false,
     use_default_reply: false,
   }))
 }

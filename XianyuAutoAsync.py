@@ -3576,57 +3576,8 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】更新默认回复图片URL失败: {e}")
 
     async def get_ai_reply(self, send_user_name: str, send_user_id: str, send_message: str, item_id: str, chat_id: str):
-        """获取AI回复"""
-        try:
-            from ai_reply_engine import ai_reply_engine
-
-            # 检查是否启用AI回复
-            if not ai_reply_engine.is_ai_enabled(self.cookie_id):
-                logger.warning(f"账号 {self.cookie_id} 未启用AI回复")
-                return None
-
-            # 从数据库获取商品信息
-            from db_manager import db_manager
-            item_info_raw = db_manager.get_item_info(self.cookie_id, item_id)
-
-            if not item_info_raw:
-                logger.warning(f"数据库中无商品信息: {item_id}")
-                # 使用默认商品信息
-                item_info = {
-                    'title': '商品信息获取失败',
-                    'price': 0,
-                    'desc': '暂无商品描述'
-                }
-            else:
-                # 解析数据库中的商品信息
-                item_info = {
-                    'title': item_info_raw.get('item_title', '未知商品'),
-                    'price': self._parse_price(item_info_raw.get('item_price', '0')),
-                    'desc': item_info_raw.get('item_detail', '暂无商品描述')
-                }
-
-            # 生成AI回复
-            # 由于外部已实现防抖机制，跳过内部等待（skip_wait=True）
-            reply = ai_reply_engine.generate_reply(
-                message=send_message,
-                item_info=item_info,
-                chat_id=chat_id,
-                cookie_id=self.cookie_id,
-                user_id=send_user_id,
-                item_id=item_id,
-                skip_wait=True  # 跳过内部等待，因为外部已实现防抖
-            )
-
-            if reply:
-                logger.info(f"【{self.cookie_id}】AI回复生成成功: {reply}")
-                return reply
-            else:
-                logger.warning(f"AI回复生成失败")
-                return None
-
-        except Exception as e:
-            logger.error(f"获取AI回复失败: {self._safe_str(e)}")
-            return None
+        """获取AI回复（已移除该能力，保留兼容空实现）。"""
+        return None
 
     def _parse_price(self, price_str: str) -> float:
         """解析价格字符串为数字"""
@@ -6613,6 +6564,8 @@ class XianyuLive:
 
         playwright = None
         browser = None
+        context = None
+        page = None
         try:
             import asyncio
             from playwright.async_api import async_playwright
@@ -6916,46 +6869,15 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】通过浏览器刷新Cookie失败: {self._safe_str(e)}")
             return False
         finally:
-            # 异步关闭浏览器：创建清理任务并等待完成，确保资源正确释放
-            close_task = None
-            try:
-                if browser or playwright:
-                    # 创建关闭任务
-                    close_task = asyncio.create_task(
-                        self._async_close_browser(browser, playwright)
-                    )
-                    logger.info(f"【{self.cookie_id}】浏览器异步关闭任务已启动")
-                    
-                    # 等待关闭任务完成，但设置超时避免阻塞太久
-                    try:
-                        await asyncio.wait_for(close_task, timeout=15.0)
-                        logger.info(f"【{self.cookie_id}】浏览器关闭任务已完成")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"【{self.cookie_id}】浏览器关闭任务超时（15秒），强制继续")
-                        # 取消任务，避免资源泄漏
-                        if not close_task.done():
-                            close_task.cancel()
-                            try:
-                                await close_task
-                            except (asyncio.CancelledError, Exception):
-                                pass
-                    except Exception as wait_e:
-                        logger.warning(f"【{self.cookie_id}】等待浏览器关闭任务时出错: {self._safe_str(wait_e)}")
-                        # 确保任务被取消
-                        if close_task and not close_task.done():
-                            close_task.cancel()
-                            try:
-                                await close_task
-                            except (asyncio.CancelledError, Exception):
-                                pass
-            except Exception as cleanup_e:
-                logger.warning(f"【{self.cookie_id}】创建浏览器关闭任务时出错: {self._safe_str(cleanup_e)}")
-                # 如果创建任务失败，尝试直接关闭
-                if browser or playwright:
-                    try:
-                        await self._force_close_resources(browser, playwright)
-                    except Exception:
-                        pass
+            # 使用统一关闭逻辑，避免不同函数出现资源回收差异
+            await self._close_browser_resources(
+                playwright=playwright,
+                browser=browser,
+                context=context,
+                page=page,
+                tag="refresh_cookie_core",
+                timeout_sec=5.0
+            )
 
     async def _async_close_browser(self, browser, playwright):
         """异步关闭：正常关闭，超时后强制关闭"""
@@ -7510,26 +7432,21 @@ class XianyuLive:
                 elif reply:
                     reply_source = '关键词'  # 标记为关键词回复
                 else:
-                    # 2. 关键词匹配失败，如果AI开关打开，尝试AI回复
-                    reply = await self.get_ai_reply(send_user_name, send_user_id, send_message, item_id, chat_id)
-                    if reply:
-                        reply_source = 'AI'  # 标记为AI回复
-                    else:
-                        # 3. 最后使用默认回复
-                        default_reply_result = await self.get_default_reply(send_user_name, send_user_id, send_message, chat_id, item_id)
-                        if default_reply_result == "EMPTY_REPLY":
-                            # 默认回复内容为空，不进行任何回复
-                            logger.info(f"[{msg_time}] 【{self.cookie_id}】默认回复内容为空，跳过自动回复")
-                            return
-                        
-                        # 处理默认回复（可能包含图片和文字）
-                        if default_reply_result and isinstance(default_reply_result, dict):
-                            reply_source = '默认'  # 标记为默认回复
-                            default_image_url = default_reply_result.get('image_url')
-                            default_text = default_reply_result.get('text')
+                    # 2. 关键词匹配失败，直接使用默认回复（已移除AI回复链路）
+                    default_reply_result = await self.get_default_reply(send_user_name, send_user_id, send_message, chat_id, item_id)
+                    if default_reply_result == "EMPTY_REPLY":
+                        # 默认回复内容为空，不进行任何回复
+                        logger.info(f"[{msg_time}] 【{self.cookie_id}】默认回复内容为空，跳过自动回复")
+                        return
+                    
+                    # 处理默认回复（可能包含图片和文字）
+                    if default_reply_result and isinstance(default_reply_result, dict):
+                        reply_source = '默认'  # 标记为默认回复
+                        default_image_url = default_reply_result.get('image_url')
+                        default_text = default_reply_result.get('text')
                             
-                            # 如果存在图片，先发送图片
-                            if default_image_url:
+                        # 如果存在图片，先发送图片
+                        if default_image_url:
                                 try:
                                     # 处理图片URL（上传到CDN如果需要）
                                     final_image_url = default_image_url
@@ -7587,16 +7504,16 @@ class XianyuLive:
                                 except Exception as e:
                                     logger.error(f"【{self.cookie_id}】默认回复图片发送失败: {self._safe_str(e)}")
                             
-                            # 然后发送文字（如果有）
-                            if default_text and default_text.strip():
-                                reply = default_text
-                            else:
-                                # 只有图片没有文字，已经发送完毕
-                                if default_image_url:
-                                    return
-                                reply = None
+                        # 然后发送文字（如果有）
+                        if default_text and default_text.strip():
+                            reply = default_text
                         else:
+                            # 只有图片没有文字，已经发送完毕
+                            if default_image_url:
+                                return
                             reply = None
+                    else:
+                        reply = None
 
             # 注意：这里只有商品ID，没有标题和详情，根据新的规则不保存到数据库
             # 商品信息会在其他有完整信息的地方保存（如发货规则匹配时）
