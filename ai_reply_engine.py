@@ -382,9 +382,9 @@ class AIReplyEngine:
                 cursor = db_manager.conn.cursor()
                 cursor.execute('''
                 INSERT INTO ai_conversations 
-                (cookie_id, chat_id, user_id, item_id, role, content, intent)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (cookie_id, chat_id, user_id, item_id, role, content, None))
+                (cookie_id, chat_id, user_id, item_id, role, content)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ''', (cookie_id, chat_id, user_id, item_id, role, content))
                 db_manager.conn.commit()
                 
                 # 获取刚插入记录的created_at
