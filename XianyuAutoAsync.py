@@ -539,6 +539,35 @@ class XianyuLive:
         
         except Exception as e:
             logger.error(f"【{self.cookie_id}】清理实例缓存时出错: {self._safe_str(e)}")
+
+    def _reap_zombie_children(self) -> int:
+        """回收当前进程的僵尸子进程（Linux/Unix）。
+
+        返回:
+            int: 本次成功回收的僵尸进程数量
+        """
+        # 仅在支持 os.waitpid 的平台执行
+        if not hasattr(os, "waitpid"):
+            return 0
+
+        reaped = 0
+        try:
+            while True:
+                # -1: 任意子进程, WNOHANG: 非阻塞
+                pid, _status = os.waitpid(-1, os.WNOHANG)
+                if pid <= 0:
+                    break
+                reaped += 1
+        except ChildProcessError:
+            # 当前没有可回收的子进程
+            pass
+        except Exception as e:
+            logger.warning(f"【{self.cookie_id}】回收僵尸进程时出错: {self._safe_str(e)}")
+
+        if reaped > 0:
+            logger.warning(f"【{self.cookie_id}】已回收僵尸子进程: {reaped} 个")
+
+        return reaped
     
     async def _cleanup_playwright_cache(self):
         """清理Playwright浏览器临时文件和缓存（Docker环境专用）"""
@@ -5475,6 +5504,10 @@ class XianyuLive:
                     # 清理过期的通知、发货和订单确认记录（防止内存泄漏）
                     self._cleanup_instance_caches()
                     await asyncio.sleep(0)  # 让出控制权，允许检查取消信号
+
+                    # 回收僵尸子进程（防止 headless 浏览器子进程 <defunct> 累积）
+                    self._reap_zombie_children()
+                    await asyncio.sleep(0)
 
                     # 清理订单状态处理器中的待处理队列与历史缓存
                     try:
