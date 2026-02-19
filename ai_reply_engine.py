@@ -2,11 +2,9 @@
 AI回复引擎模块
 集成XianyuAutoAgent的AI回复功能到现有项目中
 
-【P0/P1 最小化修改版】
-- 修复 P1-1 (高成本): detect_intent 改为本地关键词
-- 修复 P0-2 (部署陷阱): 移除客户端缓存，实现无状态
-- 修复 P1-3 (健壮性): 增强 Gemini 消息格式化
-- 遵照指示，未修复 P0-1 (议价竞争条件)
+重构说明：
+- 已移除意图检测相关逻辑（detect_intent / 意图分流 / 议价次数限制）
+- 统一使用 default 提示词生成回复
 """
 
 import os
@@ -37,22 +35,6 @@ class AIReplyEngine:
     def _init_default_prompts(self):
         """初始化默认提示词"""
         self.default_prompts = {
-            'classify': '''你是一个意图分类专家...（此提示词已不再被 detect_intent 使用）''',
-
-            'price': '''你是一位经验丰富的销售专家，擅长议价。
-语言要求：简短直接，每句≤15字，总字数≤30字。
-议价策略：
-1. 根据议价次数递减优惠：第1次小幅优惠，第2次中等优惠，第3次最大优惠
-2. 接近最大议价轮数时要坚持底线，强调商品价值  
-3. 优惠不能超过设定的最大百分比和金额
-4. 语气要友好但坚定，突出商品优势
-注意：要有真人的感觉，结合商品信息、对话历史和议价设置，给出合适的回复，句意完整。''',
-
-            'tech': '''你是一位技术专家，专业解答产品相关问题。
-语言要求：简短专业，每句≤15字，总字数≤30字。
-回答重点：产品功能、使用方法、注意事项。
-注意：要有真人的感觉，基于商品信息回答，避免过度承诺，句意完整。''',
-
             'default': '''你是一位资深电商卖家，提供优质客服。
 语言要求：简短友好，每句≤15字，总字数≤30字。
 回答重点：商品介绍、物流、售后等常见问题。
@@ -243,46 +225,6 @@ class AIReplyEngine:
         """检查指定账号是否启用AI回复"""
         settings = db_manager.get_ai_reply_settings(cookie_id)
         return settings['ai_enabled']
-    
-    def detect_intent(self, message: str, cookie_id: str) -> str:
-        """
-        检测用户消息意图 (基于关键词的本地检测)
-        修复 P1-1: 移除了AI调用，以降低成本和延迟。
-        """
-        try:
-            # 检查AI是否启用，如果未启用，不应执行任何AI相关逻辑
-            # 注意：此检查在 generate_reply 的开头已经做过，但保留此处作为第二道防线
-            settings = db_manager.get_ai_reply_settings(cookie_id)
-            if not settings['ai_enabled']:
-                return 'default'
-
-            msg_lower = message.lower()
-
-            # 价格相关关键词
-            price_keywords = [
-                '便宜', '优惠', '刀', '降价', '包邮', '价格', '多少钱', '能少', '还能', '最低', '底价',
-                '实诚价', '到100', '能到', '包个邮', '给个价', '什么价' # <-- 增加这些“口语化”的词
-            ]
-            
-            # 同样，你也可以通过正则表达式来匹配纯数字，比如 "100" "80"
-            # 但那可能有点复杂，先加关键词是最小改动
-            if any(kw in msg_lower for kw in price_keywords):
-                logger.debug(f"本地意图检测: price ({message})")
-                return 'price'
-
-            # 技术相关关键词
-            tech_keywords = ['怎么用', '参数', '坏了', '故障', '设置', '说明书', '功能', '用法', '教程', '驱动']
-            if any(kw in msg_lower for kw in tech_keywords):
-                logger.debug(f"本地意图检测: tech ({message})")
-                return 'tech'
-            
-            logger.debug(f"本地意图检测: default ({message})")
-            return 'default'
-        
-        except Exception as e:
-            logger.error(f"本地意图检测失败 {cookie_id}: {e}")
-            return 'default'
-    
     def _get_chat_lock(self, chat_id: str) -> threading.Lock:
         """获取指定chat_id的锁，如果不存在则创建"""
         with self._chat_locks_lock:
@@ -298,12 +240,8 @@ class AIReplyEngine:
             return None
         
         try:
-            # 先检测意图（用于后续保存）
-            intent = self.detect_intent(message, cookie_id)
-            logger.info(f"检测到意图: {intent} (账号: {cookie_id})")
-            
             # 在锁外先保存用户消息到数据库，让所有消息都能立即保存
-            message_created_at = self.save_conversation(chat_id, cookie_id, user_id, item_id, "user", message, intent)
+            message_created_at = self.save_conversation(chat_id, cookie_id, user_id, item_id, "user", message)
             
             # 如果调用方已经实现了去抖（debounce），可以通过 skip_wait=True 跳过内部等待
             if not skip_wait:
@@ -339,22 +277,9 @@ class AIReplyEngine:
 
                 # 3. 获取对话历史
                 context = self.get_conversation_context(chat_id, cookie_id)
-
-                # 4. 获取议价次数
-                bargain_count = self.get_bargain_count(chat_id, cookie_id)
-
-                # 5. 检查议价轮数限制 (P0-1 竞争条件风险点 - 遵照指示未修改)
-                if intent == "price":
-                    max_bargain_rounds = settings.get('max_bargain_rounds', 3)
-                    if bargain_count >= max_bargain_rounds:
-                        logger.info(f"议价次数已达上限 ({bargain_count}/{max_bargain_rounds})，拒绝继续议价")
-                        refuse_reply = f"抱歉，这个价格已经是最优惠的了，不能再便宜了哦！"
-                        self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", refuse_reply, intent)
-                        return refuse_reply
-
-                # 6. 构建提示词
+                # 4. 构建提示词（统一使用默认提示词）
                 custom_prompts = json.loads(settings['custom_prompts']) if settings['custom_prompts'] else {}
-                system_prompt = custom_prompts.get(intent, self.default_prompts[intent])
+                system_prompt = custom_prompts.get('default', self.default_prompts['default'])
 
                 # 7. 构建商品信息
                 item_desc = f"商品标题: {item_info.get('title', '未知')}\n"
@@ -363,23 +288,12 @@ class AIReplyEngine:
 
                 # 8. 构建对话历史
                 context_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in context[-10:]])  # 最近10条
-
                 # 9. 构建用户消息
-                max_bargain_rounds = settings.get('max_bargain_rounds', 3)
-                max_discount_percent = settings.get('max_discount_percent', 10)
-                max_discount_amount = settings.get('max_discount_amount', 100)
-
                 user_prompt = f"""商品信息：
 {item_desc}
 
 对话历史：
 {context_str}
-
-议价设置：
-- 当前议价次数：{bargain_count}
-- 最大议价轮数：{max_bargain_rounds}
-- 最大优惠百分比：{max_discount_percent}%
-- 最大优惠金额：{max_discount_amount}元
 
 用户消息：{message}
 
@@ -416,13 +330,7 @@ class AIReplyEngine:
                     reply = re.sub(r'\s+', ' ', reply).strip()
 
                 # 12. 保存AI回复到对话记录
-                self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", reply, intent)
-
-                # 12. 更新议价次数 (此方法已在 get_bargain_count 中通过 SQL COUNT(*) 隐式实现)
-                if intent == "price":
-                    # self.increment_bargain_count(chat_id, cookie_id) # 此行原先就没有，保持不变
-                    pass
-                
+                self.save_conversation(chat_id, cookie_id, user_id, item_id, "assistant", reply)
                 logger.info(f"AI回复生成成功 (账号: {cookie_id}): {reply}")
                 return reply
                 
@@ -467,16 +375,16 @@ class AIReplyEngine:
             return []
     
     def save_conversation(self, chat_id: str, cookie_id: str, user_id: str, 
-                         item_id: str, role: str, content: str, intent: str = None) -> Optional[str]:
+                         item_id: str, role: str, content: str) -> Optional[str]:
         """保存对话记录，返回创建时间"""
         try:
             with db_manager.lock:
                 cursor = db_manager.conn.cursor()
                 cursor.execute('''
                 INSERT INTO ai_conversations 
-                (cookie_id, chat_id, user_id, item_id, role, content, intent)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (cookie_id, chat_id, user_id, item_id, role, content, intent))
+                (cookie_id, chat_id, user_id, item_id, role, content)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ''', (cookie_id, chat_id, user_id, item_id, role, content))
                 db_manager.conn.commit()
                 
                 # 获取刚插入记录的created_at
@@ -489,22 +397,6 @@ class AIReplyEngine:
         except Exception as e:
             logger.error(f"保存对话记录失败: {e}")
             return None
-    def get_bargain_count(self, chat_id: str, cookie_id: str) -> int:
-        """获取议价次数"""
-        try:
-            with db_manager.lock:
-                cursor = db_manager.conn.cursor()
-                cursor.execute('''
-                SELECT COUNT(*) FROM ai_conversations 
-                WHERE chat_id = ? AND cookie_id = ? AND intent = 'price' AND role = 'user'
-                ''', (chat_id, cookie_id))
-                
-                result = cursor.fetchone()
-                return result[0] if result else 0
-        except Exception as e:
-            logger.error(f"获取议价次数失败: {e}")
-            return 0
-    
     def _get_recent_user_messages(self, chat_id: str, cookie_id: str, seconds: int = 2) -> List[Dict]:
         """获取最近seconds秒内的所有用户消息（包含内容和时间戳）"""
         try:
@@ -536,11 +428,6 @@ class AIReplyEngine:
         except Exception as e:
             logger.error(f"获取最近用户消息列表失败: {e}")
             return []
-    
-    def increment_bargain_count(self, chat_id: str, cookie_id: str):
-        """(此方法已废弃，通过 get_bargain_count 的 SQL 查询实现)"""
-        pass
-    
     #
     # --- 修复 P0-2: 移除所有有状态的缓存管理方法 ---
     #

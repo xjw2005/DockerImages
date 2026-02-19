@@ -539,6 +539,69 @@ class XianyuLive:
         
         except Exception as e:
             logger.error(f"【{self.cookie_id}】清理实例缓存时出错: {self._safe_str(e)}")
+
+    def _reap_zombie_children(self) -> int:
+        """回收当前进程的僵尸子进程（Linux/Unix）。
+
+        返回:
+            int: 本次成功回收的僵尸进程数量
+        """
+        # 仅在支持 os.waitpid 的平台执行
+        if not hasattr(os, "waitpid"):
+            return 0
+
+        reaped = 0
+        try:
+            while True:
+                # -1: 任意子进程, WNOHANG: 非阻塞
+                pid, _status = os.waitpid(-1, os.WNOHANG)
+                if pid <= 0:
+                    break
+                reaped += 1
+        except ChildProcessError:
+            # 当前没有可回收的子进程
+            pass
+        except Exception as e:
+            logger.warning(f"【{self.cookie_id}】回收僵尸进程时出错: {self._safe_str(e)}")
+
+        if reaped > 0:
+            logger.warning(f"【{self.cookie_id}】已回收僵尸子进程: {reaped} 个")
+
+        return reaped
+
+    async def _close_browser_resources(self, playwright=None, browser=None, context=None, page=None,
+                                       tag: str = "", timeout_sec: float = 5.0):
+        """统一关闭浏览器资源，避免不同流程重复实现导致回收不一致。"""
+        def _tag(msg: str) -> str:
+            return f"【{self.cookie_id}】{f'[{tag}] ' if tag else ''}{msg}"
+
+        async def _safe_close(obj, close_coro_name: str, display_name: str):
+            if not obj:
+                return
+            try:
+                close_coro = getattr(obj, close_coro_name, None)
+                if not close_coro:
+                    return
+                await asyncio.wait_for(close_coro(), timeout=timeout_sec)
+                logger.info(_tag(f"{display_name}关闭完成"))
+            except asyncio.TimeoutError:
+                logger.warning(_tag(f"{display_name}关闭超时（{timeout_sec}秒）"))
+            except Exception as e:
+                logger.warning(_tag(f"关闭{display_name}时出错: {self._safe_str(e)}"))
+
+        # 统一顺序：page -> context -> browser -> playwright
+        await _safe_close(page, 'close', 'Page')
+        await _safe_close(context, 'close', 'Context')
+        await _safe_close(browser, 'close', 'Browser')
+
+        if playwright:
+            try:
+                await asyncio.wait_for(playwright.stop(), timeout=timeout_sec)
+                logger.info(_tag("Playwright关闭完成"))
+            except asyncio.TimeoutError:
+                logger.warning(_tag(f"Playwright关闭超时（{timeout_sec}秒）"))
+            except Exception as e:
+                logger.warning(_tag(f"关闭Playwright时出错: {self._safe_str(e)}"))
     
     async def _cleanup_playwright_cache(self):
         """清理Playwright浏览器临时文件和缓存（Docker环境专用）"""
@@ -2667,6 +2730,8 @@ class XianyuLive:
         """使用浏览器获取商品详情"""
         playwright = None
         browser = None
+        context = None
+        page = None
         try:
             from playwright.async_api import async_playwright
 
@@ -2778,20 +2843,15 @@ class XianyuLive:
             logger.error(f"浏览器获取商品详情异常: {item_id}, 错误: {self._safe_str(e)}")
             return ""
         finally:
-            # 确保资源被正确清理
-            try:
-                if browser:
-                    await browser.close()
-                    logger.warning(f"Browser已关闭: {item_id}")
-            except Exception as e:
-                logger.warning(f"关闭browser时出错: {self._safe_str(e)}")
-            
-            try:
-                if playwright:
-                    await playwright.stop()
-                    logger.warning(f"Playwright已停止: {item_id}")
-            except Exception as e:
-                logger.warning(f"停止playwright时出错: {self._safe_str(e)}")
+            # 使用统一关闭逻辑，确保异常路径也能回收
+            await self._close_browser_resources(
+                playwright=playwright,
+                browser=browser,
+                context=context,
+                page=page,
+                tag=f"item_detail:{item_id}",
+                timeout_sec=5.0
+            )
 
 
     async def save_items_list_to_db(self, items_list):
@@ -5476,6 +5536,10 @@ class XianyuLive:
                     self._cleanup_instance_caches()
                     await asyncio.sleep(0)  # 让出控制权，允许检查取消信号
 
+                    # 回收僵尸子进程（防止 headless 浏览器子进程 <defunct> 累积）
+                    self._reap_zombie_children()
+                    await asyncio.sleep(0)
+
                     # 清理订单状态处理器中的待处理队列与历史缓存
                     try:
                         if self.order_status_handler and hasattr(self.order_status_handler, 'clear_old_pending_updates'):
@@ -5907,6 +5971,8 @@ class XianyuLive:
         """
         playwright = None
         browser = None
+        context = None
+        page = None
         target_cookie_id = cookie_id or self.cookie_id
         target_user_id = user_id or self.user_id
 
@@ -6242,44 +6308,15 @@ class XianyuLive:
             logger.error(f"【{target_cookie_id}】使用扫码cookie获取真实cookie失败: {self._safe_str(e)}")
             return False
         finally:
-            # 确保资源清理
-            try:
-                # 先关闭浏览器，再关闭Playwright（顺序很重要）
-                if browser:
-                    try:
-                        await asyncio.wait_for(browser.close(), timeout=5.0)
-                        logger.warning(f"【{target_cookie_id}】浏览器关闭完成")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"【{target_cookie_id}】浏览器关闭超时（5秒），资源可能未完全释放")
-                        # 尝试取消浏览器相关的任务
-                        try:
-                            if hasattr(browser, '_connection'):
-                                browser._connection = None
-                        except:
-                            pass
-                    except Exception as e:
-                        logger.warning(f"【{target_cookie_id}】关闭浏览器时出错: {self._safe_str(e)}")
-                
-                # Playwright关闭：使用更短的超时，超时后立即放弃
-                if playwright:
-                    try:
-                        logger.warning(f"【{target_cookie_id}】正在关闭Playwright...")
-                        await asyncio.wait_for(playwright.stop(), timeout=2.0)
-                        logger.warning(f"【{target_cookie_id}】Playwright关闭完成")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"【{target_cookie_id}】Playwright关闭超时（2秒），进程可能仍在运行")
-                        logger.warning(f"【{target_cookie_id}】提示：如果后续Playwright启动失败，可能需要手动清理残留进程")
-                        # 尝试清理Playwright的内部状态
-                        try:
-                            # 取消可能正在运行的Playwright任务
-                            if hasattr(playwright, '_transport'):
-                                playwright._transport = None
-                        except:
-                            pass
-                    except Exception as e:
-                        logger.warning(f"【{target_cookie_id}】关闭Playwright时出错: {self._safe_str(e)}")
-            except Exception as cleanup_e:
-                logger.warning(f"【{target_cookie_id}】清理浏览器资源时出错: {self._safe_str(cleanup_e)}")
+            # 使用统一关闭逻辑，避免不同函数出现资源回收差异
+            await self._close_browser_resources(
+                playwright=playwright,
+                browser=browser,
+                context=context,
+                page=page,
+                tag=f"qr_refresh:{target_cookie_id}",
+                timeout_sec=5.0
+            )
 
     async def _refresh_cookies_via_browser_page(self, current_cookies_str: str):
         """使用当前cookie访问指定页面获取真实cookie并更新
@@ -6295,6 +6332,8 @@ class XianyuLive:
         """
         playwright = None
         browser = None
+        context = None
+        page = None
 
         try:
             import asyncio
@@ -6542,30 +6581,15 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】使用当前cookie访问指定页面获取真实cookie失败: {self._safe_str(e)}")
             return False
         finally:
-            # 确保资源清理
-            try:
-                # 先关闭浏览器，再关闭Playwright（顺序很重要）
-                if browser:
-                    try:
-                        await asyncio.wait_for(browser.close(), timeout=5.0)
-                        logger.warning(f"【{self.cookie_id}】浏览器关闭完成")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"【{self.cookie_id}】浏览器关闭超时（5秒），资源可能未完全释放")
-                    except Exception as e:
-                        logger.warning(f"【{self.cookie_id}】关闭浏览器时出错: {self._safe_str(e)}")
-                
-                # Playwright关闭：使用更短的超时，超时后立即放弃
-                if playwright:
-                    try:
-                        logger.warning(f"【{self.cookie_id}】正在关闭Playwright...")
-                        await asyncio.wait_for(playwright.stop(), timeout=2.0)
-                        logger.warning(f"【{self.cookie_id}】Playwright关闭完成")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"【{self.cookie_id}】Playwright关闭超时（2秒），进程可能仍在运行")
-                    except Exception as e:
-                        logger.warning(f"【{self.cookie_id}】关闭Playwright时出错: {self._safe_str(e)}")
-            except Exception as cleanup_e:
-                logger.warning(f"【{self.cookie_id}】清理浏览器资源时出错: {self._safe_str(cleanup_e)}")
+            # 使用统一关闭逻辑，避免不同函数出现资源回收差异
+            await self._close_browser_resources(
+                playwright=playwright,
+                browser=browser,
+                context=context,
+                page=page,
+                tag="refresh_cookie_page",
+                timeout_sec=5.0
+            )
 
     def reset_qr_cookie_refresh_flag(self):
         """重置扫码登录Cookie刷新标志，允许立即执行_refresh_cookies_via_browser"""
@@ -6589,6 +6613,8 @@ class XianyuLive:
 
         playwright = None
         browser = None
+        context = None
+        page = None
         try:
             import asyncio
             from playwright.async_api import async_playwright
@@ -6892,46 +6918,15 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】通过浏览器刷新Cookie失败: {self._safe_str(e)}")
             return False
         finally:
-            # 异步关闭浏览器：创建清理任务并等待完成，确保资源正确释放
-            close_task = None
-            try:
-                if browser or playwright:
-                    # 创建关闭任务
-                    close_task = asyncio.create_task(
-                        self._async_close_browser(browser, playwright)
-                    )
-                    logger.info(f"【{self.cookie_id}】浏览器异步关闭任务已启动")
-                    
-                    # 等待关闭任务完成，但设置超时避免阻塞太久
-                    try:
-                        await asyncio.wait_for(close_task, timeout=15.0)
-                        logger.info(f"【{self.cookie_id}】浏览器关闭任务已完成")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"【{self.cookie_id}】浏览器关闭任务超时（15秒），强制继续")
-                        # 取消任务，避免资源泄漏
-                        if not close_task.done():
-                            close_task.cancel()
-                            try:
-                                await close_task
-                            except (asyncio.CancelledError, Exception):
-                                pass
-                    except Exception as wait_e:
-                        logger.warning(f"【{self.cookie_id}】等待浏览器关闭任务时出错: {self._safe_str(wait_e)}")
-                        # 确保任务被取消
-                        if close_task and not close_task.done():
-                            close_task.cancel()
-                            try:
-                                await close_task
-                            except (asyncio.CancelledError, Exception):
-                                pass
-            except Exception as cleanup_e:
-                logger.warning(f"【{self.cookie_id}】创建浏览器关闭任务时出错: {self._safe_str(cleanup_e)}")
-                # 如果创建任务失败，尝试直接关闭
-                if browser or playwright:
-                    try:
-                        await self._force_close_resources(browser, playwright)
-                    except Exception:
-                        pass
+            # 使用统一关闭逻辑，避免不同函数出现资源回收差异
+            await self._close_browser_resources(
+                playwright=playwright,
+                browser=browser,
+                context=context,
+                page=page,
+                tag="refresh_cookie_core",
+                timeout_sec=5.0
+            )
 
     async def _async_close_browser(self, browser, playwright):
         """异步关闭：正常关闭，超时后强制关闭"""
