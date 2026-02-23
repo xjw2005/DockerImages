@@ -278,19 +278,22 @@ class XianyuSliderStealth:
         # 轨迹学习相关属性
         
         self.success_history_file = f"trajectory_history/{self.pure_user_id}_success.json"
+        # 默认轨迹参数 - 真实人类模式
         self.trajectory_params = {
-            "total_steps_range": [5, 8],  # 极速：5-8步（超快滑动）
-            "base_delay_range": [0.0002, 0.0005],  # 极速：0.2-0.5ms延迟
-            "jitter_x_range": [0, 1],  # 极小抖动
-            "jitter_y_range": [0, 1],  # 极小抖动
-            "slow_factor_range": [10, 15],  # 极快加速因子
-            "acceleration_phase": 1.0,  # 全程加速
-            "fast_phase": 1.0,  # 无慢速
-            "slow_start_ratio_base": 2.0,  # 确保超调100%
-            "completion_usage_rate": 0.05,  # 极少补全使用率
-            "avg_completion_steps": 1.0,  # 极少补全步数
+            "total_steps_range": [115, 125],  # 真实人类：115-125步
+            "base_delay_range": [0.022, 0.027],  # 真实人类：22-27ms延迟
+            "jitter_x_range": [-3, 12],  # 适度抖动
+            "jitter_y_range": [-2, 12],  # 适度抖动
+            "slow_factor_range": [8, 15],  # 适度加速因子
+            "acceleration_phase": 0.10,  # 10%加速阶段
+            "fast_phase": 0.75,  # 75%快速阶段
+            "slow_start_ratio_base": 1.0,  # 正常起始速度
+            "completion_usage_rate": 0.3,  # 30%补全使用率
+            "avg_completion_steps": 3.0,  # 平均3步补全
             "trajectory_length_stats": [],
-            "learning_enabled": False
+            "prediction_match_rate": 0.8,    # 预测轨迹匹配率
+            "deviation_factor": 1.5,         # 轨迹偏差因子
+            "learning_enabled": self.enable_learning
         }
         
         # 保存最后一次使用的轨迹参数（用于分析优化）
@@ -428,8 +431,49 @@ class XianyuSliderStealth:
                 raise Exception("页面创建失败")
             logger.info(f"【{self.pure_user_id}】页面创建成功（{'最大化窗口模式' if not self.headless else '无头模式'}）")
             
-            # 添加增强反检测脚本
-            logger.info(f"【{self.pure_user_id}】添加反检测脚本...")
+            # 添加增强反检测脚本 - 关键优化
+            logger.info(f"【{self.pure_user_id}】添加增强版反检测脚本...")
+            
+            # 1. 注入 stealth.min.js (模拟真实浏览器特征)
+            # 这里使用一个简化的 stealth 脚本，覆盖常见的 headless 特征
+            stealth_script = """
+            () => {
+                // 覆盖 navigator.webdriver
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                
+                // 覆盖 WebGL 指纹
+                const getParameter = WebGLRenderingContext.prototype.getParameter;
+                WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                    // UNMASKED_VENDOR_WEBGL
+                    if (parameter === 37445) {
+                        return 'Intel Inc.';
+                    }
+                    // UNMASKED_RENDERER_WEBGL
+                    if (parameter === 37446) {
+                        return 'Intel(R) Iris(R) Xe Graphics';
+                    }
+                    return getParameter.apply(this, arguments);
+                };
+                
+                // 模拟 Chrome 运行时
+                window.chrome = {
+                    runtime: {}
+                };
+                
+                // 覆盖 notification 权限
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({ state: Notification.permission }) :
+                        originalQuery(parameters)
+                );
+            }
+            """
+            self.page.add_init_script(stealth_script)
+            
+            # 2. 添加原有的初始化脚本
             self.page.add_init_script(self._get_stealth_script(browser_features))
             logger.info(f"【{self.pure_user_id}】浏览器初始化完成")
             
@@ -1192,25 +1236,32 @@ class XianyuSliderStealth:
         if attempt == 1:
             overshoot_min, overshoot_max = 0.995, 1.015
             strategy_name = "标准轨迹"
+            current_strategy = "default"
         elif attempt == 2:
             overshoot_min, overshoot_max = 1.005, 1.03
             strategy_name = "轻微超调"
+            current_strategy = "cautious"
         else:
             overshoot_min, overshoot_max = 0.985, 1.01
             strategy_name = "轻微欠调"
+            current_strategy = "slow"
 
         target_distance = distance * random.uniform(overshoot_min, overshoot_max)
         logger.info(f"【{self.pure_user_id}】🎯 第{attempt}次：{strategy_name}")
 
+        # 使用真实人类参数（基于优化后的trajectory_params）
         if attempt == 1:
-            steps = random.randint(28, 42)
-            base_delay = random.uniform(0.008, 0.016)
+            # 第一次尝试：使用标准参数
+            steps = random.randint(115, 125)
+            base_delay = random.uniform(0.022, 0.027)
         elif attempt == 2:
-            steps = random.randint(24, 36)
-            base_delay = random.uniform(0.007, 0.014)
+            # 第二次尝试：更谨慎（更多步数，更慢速度）
+            steps = random.randint(120, 135)
+            base_delay = random.uniform(0.024, 0.030)
         else:
-            steps = random.randint(26, 38)
-            base_delay = random.uniform(0.008, 0.015)
+            # 第三次尝试：稍快一些但仍然真实
+            steps = random.randint(110, 120)
+            base_delay = random.uniform(0.020, 0.025)
 
         last_x = 0.0
         for i in range(steps):
@@ -1225,7 +1276,7 @@ class XianyuSliderStealth:
             last_x = x
 
         logger.info(f"【{self.pure_user_id}】稳健模式：{len(trajectory)}步，策略={strategy_name}")
-        return trajectory
+        return trajectory, current_strategy
     
     def generate_human_trajectory(self, distance: float, attempt: int = 1):
         """生成人类化滑动轨迹。"""
@@ -1233,11 +1284,11 @@ class XianyuSliderStealth:
             logger.info(f"【{self.pure_user_id}】📐 使用稳健物理模型生成轨迹 (第{attempt}次)")
 
             # 传递尝试次数以支持自适应超调
-            trajectory = self._generate_physics_trajectory(distance, attempt)
+            trajectory, current_strategy = self._generate_physics_trajectory(distance, attempt)
 
             logger.debug(f"【{self.pure_user_id}】稳健模式：连续拖动，无回退")
 
-            # 保存轨迹数据（记录尝试次数）
+            # 保存轨迹数据（记录尝试次数和策略）
             self.current_trajectory_data = {
                 "distance": distance,
                 "model": "physics_stable",
@@ -1246,7 +1297,8 @@ class XianyuSliderStealth:
                 "final_left_px": 0,
                 "completion_used": False,
                 "completion_steps": 0,
-                "attempt": attempt  # 记录尝试次数
+                "attempt": attempt,  # 记录尝试次数
+                "strategy": current_strategy  # 记录策略类型
             }
 
             return trajectory
@@ -2345,6 +2397,9 @@ class XianyuSliderStealth:
                 if not trajectory:
                     logger.error(f"【{self.pure_user_id}】轨迹生成失败")
                     continue
+                
+                # 获取当前策略类型（从轨迹数据中）
+                current_strategy = self.current_trajectory_data.get('strategy', 'default') if hasattr(self, 'current_trajectory_data') else 'default'
                 
                 # 4. 模拟滑动
                 if not self.simulate_slide(slider_button, trajectory):

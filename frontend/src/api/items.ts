@@ -78,3 +78,14 @@ export const updateItemMultiSpec = (cookieId: string, itemId: string, enabled: b
 export const getItemCustomPrompt = async (cookieId: string, itemId: string): Promise<{ custom_prompt: string }> => {
   return get(`/items/${cookieId}/${itemId}/prompt`)
 }
+
+// 批量更新商品自定义提示词
+export const batchUpdateItemCustomPrompts = (
+  items: { cookie_id: string; item_id: string }[],
+  customPrompt: string
+): Promise<ApiResponse> => {
+  return put('/items/batch/custom-prompt', {
+    items,
+    custom_prompt: customPrompt
+  })
+}

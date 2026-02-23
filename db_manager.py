@@ -4324,6 +4324,80 @@ class DBManager:
             self.conn.rollback()
             return False
 
+    def batch_update_item_custom_prompts(self, items_data: list) -> dict:
+        """批量更新商品的自定义提示词
+
+        Args:
+            items_data: 商品数据列表，格式：[{"cookie_id": "xxx", "item_id": "yyy", "custom_prompt": "zzz"}, ...]
+
+        Returns:
+            dict: {"success_count": int, "failed_count": int, "failed_items": []}
+        """
+        if not items_data:
+            return {"success_count": 0, "failed_count": 0, "failed_items": []}
+
+        success_count = 0
+        failed_count = 0
+        failed_items = []
+
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute('BEGIN TRANSACTION')
+
+                for item_data in items_data:
+                    try:
+                        cookie_id = item_data.get('cookie_id')
+                        item_id = item_data.get('item_id')
+                        custom_prompt = item_data.get('custom_prompt', '')
+
+                        if not cookie_id or not item_id:
+                            failed_count += 1
+                            failed_items.append(f"{cookie_id}:{item_id}")
+                            continue
+
+                        # 检查商品是否存在，如果不存在则创建基本记录
+                        cursor.execute('''
+                        INSERT OR IGNORE INTO item_info (cookie_id, item_id, created_at, updated_at)
+                        VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        ''', (cookie_id, item_id))
+
+                        # 更新自定义提示词
+                        cursor.execute('''
+                        UPDATE item_info
+                        SET custom_prompt = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE cookie_id = ? AND item_id = ?
+                        ''', (custom_prompt, cookie_id, item_id))
+
+                        if cursor.rowcount > 0:
+                            success_count += 1
+                        else:
+                            failed_count += 1
+                            failed_items.append(f"{cookie_id}:{item_id}")
+
+                    except Exception as e:
+                        logger.error(f"批量更新商品提示词失败 - {cookie_id}:{item_id}: {e}")
+                        failed_count += 1
+                        failed_items.append(f"{cookie_id}:{item_id}")
+
+                self.conn.commit()
+                logger.info(f"批量更新商品提示词完成: 成功 {success_count}, 失败 {failed_count}")
+
+                return {
+                    "success_count": success_count,
+                    "failed_count": failed_count,
+                    "failed_items": failed_items
+                }
+
+        except Exception as e:
+            logger.error(f"批量更新商品提示词事务失败: {e}")
+            self.conn.rollback()
+            return {
+                "success_count": 0,
+                "failed_count": len(items_data),
+                "failed_items": [f"{item.get('cookie_id')}:{item.get('item_id')}" for item in items_data]
+            }
+
     def batch_save_item_basic_info(self, items_data: list) -> int:
         """批量保存商品基本信息（并发安全）
 
