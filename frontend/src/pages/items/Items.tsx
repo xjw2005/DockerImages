@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { CheckSquare, Download, Edit2, ExternalLink, Loader2, Package, RefreshCw, Search, Square, Trash2, X } from 'lucide-react'
-import { batchDeleteItems, deleteItem, fetchAllItemsFromAccount, getItems, updateItem, updateItemMultiQuantityDelivery, updateItemMultiSpec } from '@/api/items'
+import { batchDeleteItems, deleteItem, fetchAllItemsFromAccount, getItems, updateItem, updateItemMultiQuantityDelivery, updateItemMultiSpec, getItemCustomPrompt } from '@/api/items'
 import { getAccounts } from '@/api/accounts'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'
@@ -22,6 +22,7 @@ export function Items() {
   // 编辑弹窗状态
   const [editingItem, setEditingItem] = useState<Item | null>(null)
   const [editDetail, setEditDetail] = useState('')
+  const [editCustomPrompt, setEditCustomPrompt] = useState('')
   const [editSaving, setEditSaving] = useState(false)
 
   const loadItems = async () => {
@@ -168,9 +169,17 @@ export function Items() {
   }
 
   // 打开编辑弹窗
-  const handleEdit = (item: Item) => {
+  const handleEdit = async (item: Item) => {
     setEditingItem(item)
     setEditDetail(item.item_detail || item.desc || '')
+
+    // 加载商品的自定义提示词
+    try {
+      const promptResult = await getItemCustomPrompt(item.cookie_id, item.item_id)
+      setEditCustomPrompt(promptResult.custom_prompt || '')
+    } catch {
+      setEditCustomPrompt('')
+    }
   }
 
   // 保存编辑
@@ -180,8 +189,9 @@ export function Items() {
     try {
       await updateItem(editingItem.cookie_id, editingItem.item_id, {
         item_detail: editDetail,
+        custom_prompt: editCustomPrompt,
       })
-      addToast({ type: 'success', message: '商品详情已更新' })
+      addToast({ type: 'success', message: '商品信息已更新' })
       setEditingItem(null)
       loadItems()
     } catch {
@@ -465,6 +475,18 @@ export function Items() {
                   onChange={(e) => setEditDetail(e.target.value)}
                   className="input-ios h-32 resize-none"
                   placeholder="输入商品详情..."
+                />
+              </div>
+              <div className="input-group">
+                <label className="input-label">
+                  自定义提示词
+                  <span className="text-xs text-gray-500 ml-2">（可选，为此商品设置专属的AI回复提示词）</span>
+                </label>
+                <textarea
+                  value={editCustomPrompt}
+                  onChange={(e) => setEditCustomPrompt(e.target.value)}
+                  className="input-ios h-24 resize-none"
+                  placeholder="为此商品设置专属的AI回复提示词，如：这是网盘类商品，指导用户保存到网盘观看..."
                 />
               </div>
             </div>

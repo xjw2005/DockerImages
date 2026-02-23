@@ -73,3 +73,8 @@ export const updateItemMultiQuantityDelivery = (cookieId: string, itemId: string
 export const updateItemMultiSpec = (cookieId: string, itemId: string, enabled: boolean): Promise<ApiResponse> => {
   return put(`/items/${cookieId}/${itemId}/multi-spec`, { is_multi_spec: enabled })
 }
+
+// 获取商品自定义提示词
+export const getItemCustomPrompt = async (cookieId: string, itemId: string): Promise<{ custom_prompt: string }> => {
+  return get(`/items/${cookieId}/${itemId}/prompt`)
+}

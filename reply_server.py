@@ -3156,8 +3156,24 @@ def update_system_setting(key: str, setting_data: SystemSettingIn, _: None = Dep
         if key == 'admin_password_hash':
             raise HTTPException(status_code=400, detail='请使用密码修改接口')
 
+        old_value = db_manager.get_system_setting(key)
         success = db_manager.set_system_setting(key, setting_data.value, setting_data.description)
         if success:
+            # 系统AI配置变更时，同步到账号级配置（避免旧值残留）
+            if key in {'ai_model', 'ai_api_key', 'ai_api_url'}:
+                synced_count = db_manager.sync_ai_reply_settings_from_system(
+                    key=key,
+                    new_value=setting_data.value,
+                    old_value=old_value
+                )
+                if synced_count >= 0:
+                    logger.info(
+                        f"系统AI设置已同步到账号配置: key={key}, old={old_value}, new={setting_data.value}, synced={synced_count}"
+                    )
+                else:
+                    logger.warning(
+                        f"系统AI设置写入成功，但账号配置同步失败: key={key}, old={old_value}, new={setting_data.value}"
+                    )
             return {'msg': 'system setting updated'}
         else:
             raise HTTPException(status_code=400, detail='更新失败')
@@ -4675,6 +4691,7 @@ def get_item_detail(cookie_id: str, item_id: str, current_user: Dict[str, Any] =
 
 class ItemDetailUpdate(BaseModel):
     item_detail: str
+    custom_prompt: Optional[str] = None
 
 
 @app.put("/items/{cookie_id}/{item_id}")
@@ -4684,7 +4701,7 @@ def update_item_detail(
     update_data: ItemDetailUpdate,
     current_user: Dict[str, Any] = Depends(get_current_user)
 ):
-    """更新商品详情"""
+    """更新商品详情和自定义提示词"""
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
@@ -4694,15 +4711,47 @@ def update_item_detail(
         if cookie_id not in user_cookies:
             raise HTTPException(status_code=403, detail="无权限操作该Cookie")
 
+        # 更新商品详情
         success = db_manager.update_item_detail(cookie_id, item_id, update_data.item_detail)
+
+        # 如果提供了自定义提示词，也更新它
+        if update_data.custom_prompt is not None:
+            prompt_success = db_manager.update_item_custom_prompt(cookie_id, item_id, update_data.custom_prompt)
+            if not prompt_success:
+                raise HTTPException(status_code=400, detail="更新商品提示词失败")
+
         if success:
-            return {"message": "商品详情更新成功"}
+            return {"message": "商品信息更新成功"}
         else:
             raise HTTPException(status_code=400, detail="更新失败")
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新商品详情失败: {str(e)}")
+
+
+@app.get("/items/{cookie_id}/{item_id}/prompt")
+def get_item_custom_prompt(
+    cookie_id: str,
+    item_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """获取商品的自定义提示词"""
+    try:
+        # 检查cookie是否属于当前用户
+        user_id = current_user['user_id']
+        from db_manager import db_manager
+        user_cookies = db_manager.get_all_cookies(user_id)
+
+        if cookie_id not in user_cookies:
+            raise HTTPException(status_code=403, detail="无权限访问该Cookie")
+
+        custom_prompt = db_manager.get_item_custom_prompt(cookie_id, item_id)
+        return {"custom_prompt": custom_prompt}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取商品提示词失败: {str(e)}")
 
 
 @app.delete("/items/{cookie_id}/{item_id}")
@@ -4794,7 +4843,7 @@ def get_ai_reply_settings(cookie_id: str, current_user: Dict[str, Any] = Depends
 
 @app.put("/ai-reply-settings/{cookie_id}")
 def update_ai_reply_settings(cookie_id: str, settings: AIReplySettings, current_user: Dict[str, Any] = Depends(get_current_user)):
-    """更新指定账号的AI回复设置"""
+    """更新并同步当前用户所有账号的AI回复设置"""
     try:
         # 检查cookie是否属于当前用户
         user_id = current_user['user_id']
@@ -4808,21 +4857,35 @@ def update_ai_reply_settings(cookie_id: str, settings: AIReplySettings, current_
         if cookie_manager.manager is None:
             raise HTTPException(status_code=500, detail='CookieManager 未就绪')
 
-        # 保存设置
+        # 同步更新当前用户的所有账号AI设置
         settings_dict = settings.dict()
-        success = db_manager.save_ai_reply_settings(cookie_id, settings_dict)
+        all_cookie_ids = list(user_cookies.keys())
+        if not all_cookie_ids:
+            raise HTTPException(status_code=404, detail="当前用户没有可同步的账号")
 
-        if success:
+        failed_cookie_ids = []
+        for cid in all_cookie_ids:
+            success = db_manager.save_ai_reply_settings(cid, settings_dict)
+            if not success:
+                failed_cookie_ids.append(cid)
 
-            # 如果启用了AI回复，记录日志
-            if settings.ai_enabled:
-                logger.info(f"账号 {cookie_id} 启用AI回复")
-            else:
-                logger.info(f"账号 {cookie_id} 禁用AI回复")
+        if failed_cookie_ids:
+            logger.error(f"同步AI回复设置失败，失败账号: {failed_cookie_ids}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"同步失败，失败账号数: {len(failed_cookie_ids)}"
+            )
 
-            return {"message": "AI回复设置更新成功"}
+        # 如果启用了AI回复，记录日志
+        if settings.ai_enabled:
+            logger.info(f"用户 {user_id} 启用AI回复并同步到全部账号，账号数: {len(all_cookie_ids)}")
         else:
-            raise HTTPException(status_code=400, detail="更新失败")
+            logger.info(f"用户 {user_id} 禁用AI回复并同步到全部账号，账号数: {len(all_cookie_ids)}")
+
+        return {
+            "message": "AI回复设置更新成功，已同步到所有账号",
+            "synced_count": len(all_cookie_ids)
+        }
     except HTTPException:
         raise
     except Exception as e:

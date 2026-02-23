@@ -35,10 +35,11 @@ class AIReplyEngine:
     def _init_default_prompts(self):
         """初始化默认提示词"""
         self.default_prompts = {
-            'default': '''你是一位资深电商卖家，提供优质客服。
-语言要求：简短友好，每句≤15字，总字数≤30字。
-回答重点：商品介绍、物流、售后等常见问题。
-注意：要有真人感觉，结合商品信息，给出实用建议，句意完整。'''
+            'default': '''你是一位专业的电商客服助手，负责回复买家咨询。请遵循以下规则：
+1. 回复简洁友好，一次只回复一句话，中文15字以内
+2. 结合商品信息和对话历史，给出准确实用的回答
+3. 保持真人客服的语气，避免机器人式回复
+4. 重点回答商品介绍、价格、物流、售后等问题'''
         }
     
     def _create_openai_client(self, cookie_id: str) -> Optional[OpenAI]:
@@ -47,8 +48,22 @@ class AIReplyEngine:
         修复 P0-2: 移除了缓存逻辑，以支持多进程无状态部署
         """
         settings = db_manager.get_ai_reply_settings(cookie_id)
-        if not settings['ai_enabled'] or not settings['api_key']:
-            return None
+        """settings:
+        {
+            'model_name': use_model,
+            'api_key': use_api_key,
+            'base_url': use_base_url,
+        }
+        """
+        
+        # if not _account_setting['ai_enabled']:
+        # """_summary_
+        # 从account_setting获取AI回复是否开启。
+
+        # Returns:
+        #     _type_: _description_
+        # """            
+        #   return None
         
         try:
             logger.info(f"创建新的OpenAI客户端实例 {cookie_id}: base_url={settings['base_url']}, api_key={'***' + settings['api_key'][-4:] if settings['api_key'] else 'None'}")
@@ -204,6 +219,14 @@ class AIReplyEngine:
 
     def _call_openai_api(self, client: OpenAI, settings: dict, messages: list, max_tokens: int = 100, temperature: float = 0.7) -> str:
         """调用OpenAI兼容API"""
+        """param:
+        message: [{"role": "system"/"user"/"assistant", "content": "消息内容"}, ...]
+        max_tokens: int, 最大生成字符数
+        settings: dict {"model_name": "模型名称", "api_key": "API密钥", "base_url": "API地址"}
+
+        Returns:
+            _type_: _description_
+        """
         try:
             logger.info(f"调用OpenAI API: model={settings['model_name']}, base_url={settings.get('base_url', 'default')}")
             response = client.chat.completions.create(
@@ -274,12 +297,22 @@ class AIReplyEngine:
                 
                 # 1. 获取AI回复设置
                 settings = db_manager.get_ai_reply_settings(cookie_id)
-
+                """
+                settings:
+                {"model_name": "模型名称",api_key": "API密钥","base_url": "API地址"}
+                """
                 # 3. 获取对话历史
                 context = self.get_conversation_context(chat_id, cookie_id)
-                # 4. 构建提示词（统一使用默认提示词）
-                custom_prompts = json.loads(settings['custom_prompts']) if settings['custom_prompts'] else {}
-                system_prompt = custom_prompts.get('default', self.default_prompts['default'])
+
+                # 4. 获取商品专属提示词（优先级最高）
+                item_custom_prompt = db_manager.get_item_custom_prompt(cookie_id, item_id)
+
+                # 5. 如果没有商品专属提示词，则获取账号的自定义提示词
+                account_ai_prompt_setting = db_manager.get_account_ai_setting(cookie_id)
+                account_custom_prompt = account_ai_prompt_setting.get('default_ai_prompt', '')
+
+                # 确定最终使用的自定义提示词（商品级 > 账号级）
+                final_custom_prompt = item_custom_prompt if item_custom_prompt.strip() else account_custom_prompt
 
                 # 7. 构建商品信息
                 item_desc = f"商品标题: {item_info.get('title', '未知')}\n"
@@ -288,20 +321,28 @@ class AIReplyEngine:
 
                 # 8. 构建对话历史
                 context_str = "\n".join([f"{msg['role']}: {msg['content']}" for msg in context[-10:]])  # 最近10条
-                # 9. 构建用户消息
+
+                # 9. 构建用户消息（包含自定义提示词）
                 user_prompt = f"""商品信息：
 {item_desc}
 
 对话历史：
 {context_str}
 
-用户消息：{message}
+用户消息：{message}"""
 
-请根据以上信息生成回复："""
+                # 如果有自定义提示词，添加到用户消息中
+                if final_custom_prompt.strip():
+                    prompt_source = "商品专属" if item_custom_prompt.strip() else "账号通用"
+                    user_prompt = f"""特殊指令（{prompt_source}）：{final_custom_prompt}
+
+{user_prompt}"""
+
+                user_prompt += "\n\n注意一次只回复一句且中文15字以内！！！\n请根据以上信息生成回复："
 
                 # 10. 调用AI生成回复
                 messages = [
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": self.default_prompts['default']},
                     {"role": "user", "content": user_prompt}
                 ]
 

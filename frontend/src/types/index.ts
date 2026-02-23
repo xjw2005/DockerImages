@@ -75,6 +75,7 @@ export interface Item {
   is_multi_spec?: number | boolean
   multi_delivery?: boolean
   multi_quantity_delivery?: number | boolean
+  custom_prompt?: string
   created_at?: string
   updated_at?: string
 }
@@ -104,7 +105,6 @@ export interface Order {
   quantity: number
   amount: string
   status: OrderStatus
-  is_bargain?: boolean
   created_at?: string
   updated_at?: string
 }

@@ -490,10 +490,8 @@ export function Accounts() {
         ...currentSettings,
         ai_enabled: newEnabled,  // 直接使用 ai_enabled 字段
       })
-      setAccounts(prev => prev.map(a =>
-        a.id === account.id ? { ...a, aiEnabled: newEnabled } : a,
-      ))
-      addToast({ type: 'success', message: `AI回复已${newEnabled ? '开启' : '关闭'}` })
+      setAccounts(prev => prev.map(a => ({ ...a, aiEnabled: newEnabled })))
+      addToast({ type: 'success', message: `AI回复已${newEnabled ? '开启' : '关闭'}，并同步到所有账号` })
     } catch {
       addToast({ type: 'error', message: '操作失败' })
     }
@@ -524,10 +522,8 @@ export function Accounts() {
         custom_prompts: aiCustomPrompts,
       })
       // 更新本地状态
-      setAccounts(prev => prev.map(a =>
-        a.id === aiSettingsAccount.id ? { ...a, aiEnabled } : a,
-      ))
-      addToast({ type: 'success', message: 'AI设置已保存' })
+      setAccounts(prev => prev.map(a => ({ ...a, aiEnabled })))
+      addToast({ type: 'success', message: 'AI设置已保存，并同步到所有账号' })
       closeModal()
     } catch {
       addToast({ type: 'error', message: '保存失败' })

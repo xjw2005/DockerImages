@@ -8104,21 +8104,6 @@ class XianyuLive:
                             logger.warning(f'[{msg_time}] 【{self.cookie_id}】❌ 未能提取到订单ID，无法执行免拼发货')
                             return
 
-                        # 更新订单的is_bargain字段为True（标记为小刀订单）
-                        try:
-                            from db_manager import db_manager
-                            db_manager.insert_or_update_order(
-                                order_id=order_id,
-                                item_id=item_id,
-                                buyer_id=send_user_id,
-                                chat_id=chat_id,
-                                cookie_id=self.cookie_id,
-                                is_bargain=True
-                            )
-                            logger.info(f'[{msg_time}] 【{self.cookie_id}】✅ 订单 {order_id} 已标记为小刀订单')
-                        except Exception as e:
-                            logger.error(f'[{msg_time}] 【{self.cookie_id}】标记小刀订单失败: {self._safe_str(e)}')
-
                         # 延迟2秒后执行免拼发货
                         logger.info(f'[{msg_time}] 【{self.cookie_id}】延迟2秒后执行免拼发货...')
                         await asyncio.sleep(2)
