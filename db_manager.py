@@ -155,9 +155,6 @@ class DBManager:
                 model_name TEXT DEFAULT 'qwen-plus',
                 api_key TEXT,
                 base_url TEXT DEFAULT 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-                max_discount_percent INTEGER DEFAULT 10,
-                max_discount_amount INTEGER DEFAULT 100,
-                max_bargain_rounds INTEGER DEFAULT 3,
                 custom_prompts TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -176,7 +173,6 @@ class DBManager:
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 intent TEXT,
-                bargain_count INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (cookie_id) REFERENCES cookies (id) ON DELETE CASCADE
             )
@@ -229,21 +225,11 @@ class DBManager:
                 amount TEXT,
                 order_status TEXT DEFAULT 'unknown',
                 cookie_id TEXT,
-                is_bargain INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
             )
             ''')
-
-            # 检查并添加 is_bargain 列（用于标记小刀订单）
-            try:
-                self._execute_sql(cursor, "SELECT is_bargain FROM orders LIMIT 1")
-            except sqlite3.OperationalError:
-                # is_bargain 列不存在，需要添加
-                logger.info("正在为 orders 表添加 is_bargain 列...")
-                self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN is_bargain INTEGER DEFAULT 0")
-                logger.info("orders 表 is_bargain 列添加完成")
 
             # 检查并添加 chat_id 列（用于轮询自动发货发送消息）
             try:
@@ -308,6 +294,15 @@ class DBManager:
                 logger.info("正在为 item_info 表添加 multi_quantity_delivery 列...")
                 self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN multi_quantity_delivery BOOLEAN DEFAULT FALSE")
                 logger.info("item_info 表 multi_quantity_delivery 列添加完成")
+
+            # 检查并添加 custom_prompt 列（用于商品专属提示词功能）
+            try:
+                self._execute_sql(cursor, "SELECT custom_prompt FROM item_info LIMIT 1")
+            except sqlite3.OperationalError:
+                # custom_prompt 列不存在，需要添加
+                logger.info("正在为 item_info 表添加 custom_prompt 列...")
+                self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN custom_prompt TEXT")
+                logger.info("item_info 表 custom_prompt 列添加完成")
 
             # 创建自动发货规则表
             cursor.execute('''
@@ -755,14 +750,6 @@ class DBManager:
                     # 多数量发货字段不存在，需要添加
                     self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN multi_quantity_delivery BOOLEAN DEFAULT FALSE")
                     logger.info("为item_info表添加多数量发货字段")
-
-                # 检查orders表是否有is_bargain字段
-                try:
-                    self._execute_sql(cursor, "SELECT is_bargain FROM orders LIMIT 1")
-                except sqlite3.OperationalError:
-                    # is_bargain字段不存在，需要添加
-                    self._execute_sql(cursor, "ALTER TABLE orders ADD COLUMN is_bargain INTEGER DEFAULT 0")
-                    logger.info("为orders表添加is_bargain字段")
 
                 # 处理keywords表的唯一约束问题
                 # 由于SQLite不支持直接修改约束，我们需要重建表
@@ -1815,25 +1802,21 @@ class DBManager:
 
     # -------------------- AI回复设置操作 --------------------
     def save_ai_reply_settings(self, cookie_id: str, settings: dict) -> bool:
-        """保存AI回复设置"""
+        """保存AI回复设置（仅保存账号级配置）
+
+        只保存 ai_enabled 和 custom_prompts，
+        model_name/api_key/base_url 统一使用系统级配置
+        """
         with self.lock:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
                 INSERT OR REPLACE INTO ai_reply_settings
-                (cookie_id, ai_enabled, model_name, api_key, base_url,
-                 max_discount_percent, max_discount_amount, max_bargain_rounds,
-                 custom_prompts, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                (cookie_id, ai_enabled, custom_prompts, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     cookie_id,
                     settings.get('ai_enabled', False),
-                    settings.get('model_name', 'qwen-plus'),
-                    settings.get('api_key', ''),
-                    settings.get('base_url', 'https://dashscope.aliyuncs.com/compatible-mode/v1'),
-                    settings.get('max_discount_percent', 10),
-                    settings.get('max_discount_amount', 100),
-                    settings.get('max_bargain_rounds', 3),
                     settings.get('custom_prompts', '')
                 ))
                 self.conn.commit()
@@ -1844,78 +1827,109 @@ class DBManager:
                 self.conn.rollback()
                 return False
 
-    def get_ai_reply_settings(self, cookie_id: str) -> dict:
-        """获取AI回复设置
-        
-        优先使用账号级别的设置，如果账号没有配置api_key/base_url/model_name，
-        则从系统设置中读取全局AI配置作为默认值
+    def get_ai_reply_settings(self, cookie_id: str = None) -> dict:
+        """获取AI回复设置（账号级+系统级）
+
+        返回账号的 AI 设置，包括：
+        - ai_enabled, custom_prompts: 从账号级设置获取
+        - model_name, api_key, base_url: 从系统级设置获取
         """
-        # 默认值常量，用于判断是否使用系统设置
-        DEFAULT_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
-        DEFAULT_MODEL = 'qwen-plus'
-        
         with self.lock:
             try:
+                # 获取账号级设置
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                SELECT ai_enabled, model_name, api_key, base_url,
-                       max_discount_percent, max_discount_amount, max_bargain_rounds,
-                       custom_prompts
-                FROM ai_reply_settings WHERE cookie_id = ?
+                SELECT ai_enabled, custom_prompts
+                FROM ai_reply_settings
+                WHERE cookie_id = ?
                 ''', (cookie_id,))
+                row = cursor.fetchone()
 
-                result = cursor.fetchone()
-                
-                # 获取系统级别的AI设置作为默认值
-                system_api_key = self.get_system_setting('ai_api_key') or ''
-                system_base_url = self.get_system_setting('ai_api_url') or DEFAULT_BASE_URL
-                system_model = self.get_system_setting('ai_model') or DEFAULT_MODEL
-                
-                if result:
-                    # 账号有设置，但如果api_key/base_url/model_name为空或等于默认值，使用系统设置
-                    account_model = result[1]
-                    account_api_key = result[2]
-                    account_base_url = result[3]
-                    
-                    # 如果账号值为空或等于硬编码默认值，则使用系统设置
-                    use_model = account_model if (account_model and account_model != DEFAULT_MODEL) else system_model
-                    use_api_key = account_api_key if account_api_key else system_api_key
-                    use_base_url = account_base_url if (account_base_url and account_base_url != DEFAULT_BASE_URL) else system_base_url
-                    
-                    return {
-                        'ai_enabled': bool(result[0]),
-                        'model_name': use_model,
-                        'api_key': use_api_key,
-                        'base_url': use_base_url,
-                        'max_discount_percent': result[4],
-                        'max_discount_amount': result[5],
-                        'max_bargain_rounds': result[6],
-                        'custom_prompts': result[7]
-                    }
-                else:
-                    # 账号没有设置，使用系统设置作为默认值
-                    return {
-                        'ai_enabled': False,
-                        'model_name': system_model,
-                        'api_key': system_api_key,
-                        'base_url': system_base_url,
-                        'max_discount_percent': 10,
-                        'max_discount_amount': 100,
-                        'max_bargain_rounds': 3,
-                        'custom_prompts': ''
-                    }
+                ai_enabled = bool(row[0]) if row else False
+                custom_prompts = row[1] if row and row[1] else ''
+
+                # 获取系统级设置
+                model_name = self.get_system_setting('ai_model') or ''
+                api_key = self.get_system_setting('ai_api_key') or ''
+                base_url = self.get_system_setting('ai_api_url') or ''
+
+                return {
+                    'ai_enabled': ai_enabled,
+                    'model_name': model_name,
+                    'api_key': api_key,
+                    'base_url': base_url,
+                    'custom_prompts': custom_prompts,
+                }
             except Exception as e:
                 logger.error(f"获取AI回复设置失败: {e}")
                 return {
                     'ai_enabled': False,
-                    'model_name': 'qwen-plus',
+                    'model_name': '',
                     'api_key': '',
-                    'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-                    'max_discount_percent': 10,
-                    'max_discount_amount': 100,
-                    'max_bargain_rounds': 3,
-                    'custom_prompts': ''
+                    'base_url': '',
+                    'custom_prompts': '',
                 }
+
+    def get_account_ai_setting(self, cookie_id: str) -> dict:
+        """获取账号AI设置（账号开关/提示词）"""
+        with self.lock:
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                SELECT ai_enabled, custom_prompts
+                FROM ai_reply_settings
+                WHERE cookie_id = ?
+                ''', (cookie_id,))
+                row = cursor.fetchone()
+
+                ai_enabled = bool(row[0]) if row else False
+                custom_prompts = row[1] if row and row[1] else ''
+                system_model = self.get_system_setting('ai_model') or DEFAULT_MODEL
+                system_api_key = self.get_system_setting('ai_api_key') or ''
+                system_base_url = self.get_system_setting('ai_api_url') or DEFAULT_BASE_URL
+
+                default_ai_prompt = ''
+                if custom_prompts:
+                    try:
+                        parsed = json.loads(custom_prompts)
+                        if isinstance(parsed, dict):
+                            default_ai_prompt = str(parsed.get('default') or '').strip()
+                        elif isinstance(parsed, str):
+                            default_ai_prompt = parsed.strip()
+                    except Exception:
+                        # 兼容前端直接保存纯文本提示词
+                        default_ai_prompt = str(custom_prompts).strip()
+
+                return {
+                    'cookie_id': cookie_id,
+                    'ai_enabled': ai_enabled,
+                    'model_name': system_model,
+                    'api_key': system_api_key,
+                    'base_url': system_base_url,
+                    'custom_prompts': custom_prompts,
+                    'default_ai_prompt': default_ai_prompt,
+                }
+            except Exception as e:
+                logger.error(f"获取账号AI设置失败: {cookie_id}, {e}")
+                return {
+                    'cookie_id': cookie_id,
+                    'ai_enabled': False,
+                    'model_name': DEFAULT_MODEL,
+                    'api_key': '',
+                    'base_url': DEFAULT_BASE_URL,
+                    'custom_prompts': '',
+                    'default_ai_prompt': '',
+                }
+
+    def sync_ai_reply_settings_from_system(self, key: str, new_value: str, old_value: Optional[str] = None) -> int:
+        
+        """同步系统级 AI 配置到账号级 AI 配置
+
+        注意: 现在账号级配置只保存 ai_enabled 和 custom_prompts,
+        model_name/api_key/base_url 直接从系统设置读取, 无需同步.
+        此方法保留以保持向后兼容, 但不执行任何操作."""
+        logger.info(f"系统AI设置已更新: key={key}, 账号将自动使用新的系统配置")
+        return 0
 
     def get_all_ai_reply_settings(self) -> Dict[str, dict]:
         """获取所有账号的AI回复设置"""
@@ -1923,9 +1937,7 @@ class DBManager:
             try:
                 cursor = self.conn.cursor()
                 cursor.execute('''
-                SELECT cookie_id, ai_enabled, model_name, api_key, base_url,
-                       max_discount_percent, max_discount_amount, max_bargain_rounds,
-                       custom_prompts
+                SELECT cookie_id, ai_enabled, model_name, api_key, base_url, custom_prompts
                 FROM ai_reply_settings
                 ''')
 
@@ -1937,10 +1949,7 @@ class DBManager:
                         'model_name': row[2],
                         'api_key': row[3],
                         'base_url': row[4],
-                        'max_discount_percent': row[5],
-                        'max_discount_amount': row[6],
-                        'max_bargain_rounds': row[7],
-                        'custom_prompts': row[8]
+                        'custom_prompts': row[5]
                     }
 
                 return result
@@ -4253,6 +4262,68 @@ class DBManager:
             self.conn.rollback()
             return False
 
+    def get_item_custom_prompt(self, cookie_id: str, item_id: str) -> str:
+        """获取商品的自定义提示词
+
+        Args:
+            cookie_id: Cookie ID
+            item_id: 商品ID
+
+        Returns:
+            str: 自定义提示词，如果没有则返回空字符串
+        """
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.execute('''
+                SELECT custom_prompt FROM item_info
+                WHERE cookie_id = ? AND item_id = ?
+                ''', (cookie_id, item_id))
+
+                result = cursor.fetchone()
+                return result[0] if result and result[0] else ''
+
+        except Exception as e:
+            logger.error(f"获取商品自定义提示词失败: {e}")
+            return ''
+
+    def update_item_custom_prompt(self, cookie_id: str, item_id: str, custom_prompt: str) -> bool:
+        """更新商品的自定义提示词
+
+        Args:
+            cookie_id: Cookie ID
+            item_id: 商品ID
+            custom_prompt: 自定义提示词
+
+        Returns:
+            bool: 操作是否成功
+        """
+        try:
+            with self.lock:
+                cursor = self.conn.cursor()
+
+                # 检查商品是否存在，如果不存在则创建基本记录
+                cursor.execute('''
+                INSERT OR IGNORE INTO item_info (cookie_id, item_id, created_at, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ''', (cookie_id, item_id))
+
+                # 更新自定义提示词
+                cursor.execute('''
+                UPDATE item_info
+                SET custom_prompt = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE cookie_id = ? AND item_id = ?
+                ''', (custom_prompt, cookie_id, item_id))
+
+                self.conn.commit()
+                logger.info(f"更新商品自定义提示词成功: {item_id}")
+                return True
+
+        except Exception as e:
+            logger.error(f"更新商品自定义提示词失败: {e}")
+            self.conn.rollback()
+            return False
+
     def batch_save_item_basic_info(self, items_data: list) -> int:
         """批量保存商品基本信息（并发安全）
 
@@ -4622,8 +4693,7 @@ class DBManager:
     def insert_or_update_order(self, order_id: str, item_id: str = None, buyer_id: str = None,
                               chat_id: str = None,
                               spec_name: str = None, spec_value: str = None, quantity: str = None,
-                              amount: str = None, order_status: str = None, cookie_id: str = None,
-                              is_bargain: bool = None):
+                              amount: str = None, order_status: str = None, cookie_id: str = None):
         """插入或更新订单信息"""
         with self.lock:
             try:
@@ -4673,9 +4743,6 @@ class DBManager:
                     if cookie_id is not None:
                         update_fields.append("cookie_id = ?")
                         update_values.append(cookie_id)
-                    if is_bargain is not None:
-                        update_fields.append("is_bargain = ?")
-                        update_values.append(1 if is_bargain else 0)
 
                     if update_fields:
                         update_fields.append("updated_at = CURRENT_TIMESTAMP")
@@ -4688,11 +4755,10 @@ class DBManager:
                     # 插入新订单
                     cursor.execute('''
                     INSERT INTO orders (order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
-                                      quantity, amount, order_status, cookie_id, is_bargain)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      quantity, amount, order_status, cookie_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
-                          quantity, amount, order_status or 'unknown', cookie_id,
-                          1 if is_bargain else 0))
+                          quantity, amount, order_status or 'unknown', cookie_id))
                     logger.info(f"插入新订单: {order_id}")
 
                 self.conn.commit()
@@ -4710,7 +4776,7 @@ class DBManager:
                 cursor = self.conn.cursor()
                 cursor.execute('''
                 SELECT order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
-                       quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at
+                       quantity, amount, order_status, cookie_id, created_at, updated_at
                 FROM orders WHERE order_id = ?
                 ''', (order_id,))
 
@@ -4728,9 +4794,8 @@ class DBManager:
                         'amount': row[7],
                         'status': row[8],
                         'cookie_id': row[9],
-                        'is_bargain': bool(row[10]) if row[10] is not None else False,
-                        'created_at': row[11],
-                        'updated_at': row[12]
+                        'created_at': row[10],
+                        'updated_at': row[11]
                     }
                 return None
 
@@ -4761,7 +4826,7 @@ class DBManager:
                 cursor = self.conn.cursor()
                 cursor.execute('''
                 SELECT order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
-                       quantity, amount, order_status, is_bargain, created_at, updated_at
+                       quantity, amount, order_status, created_at, updated_at
                 FROM orders WHERE cookie_id = ?
                 ORDER BY created_at DESC LIMIT ?
                 ''', (cookie_id, limit))
@@ -4779,9 +4844,8 @@ class DBManager:
                         'quantity': row[6],
                         'amount': row[7],
                         'status': row[8],
-                        'is_bargain': bool(row[9]) if row[9] is not None else False,
-                        'created_at': row[10],
-                        'updated_at': row[11]
+                        'created_at': row[9],
+                        'updated_at': row[10]
                     })
 
                 return orders
@@ -4797,7 +4861,7 @@ class DBManager:
                 cursor = self.conn.cursor()
                 cursor.execute('''
                 SELECT order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
-                       quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at
+                       quantity, amount, order_status, cookie_id, created_at, updated_at
                 FROM orders
                 ORDER BY created_at DESC LIMIT ?
                 ''', (limit,))
@@ -4816,9 +4880,8 @@ class DBManager:
                         'amount': row[7],
                         'status': row[8],
                         'cookie_id': row[9],
-                        'is_bargain': bool(row[10]) if row[10] is not None else False,
-                        'created_at': row[11],
-                        'updated_at': row[12]
+                        'created_at': row[10],
+                        'updated_at': row[11]
                     })
 
                 return orders
@@ -4845,7 +4908,7 @@ class DBManager:
                 if cookie_id:
                     cursor.execute('''
                     SELECT order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
-                           quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at
+                           quantity, amount, order_status, cookie_id, created_at, updated_at
                     FROM orders
                     WHERE order_status = 'pending_ship' AND cookie_id = ?
                     ORDER BY created_at ASC
@@ -4854,7 +4917,7 @@ class DBManager:
                 else:
                     cursor.execute('''
                     SELECT order_id, item_id, buyer_id, chat_id, spec_name, spec_value,
-                           quantity, amount, order_status, cookie_id, is_bargain, created_at, updated_at
+                           quantity, amount, order_status, cookie_id, created_at, updated_at
                     FROM orders
                     WHERE order_status = 'pending_ship'
                     ORDER BY created_at ASC
@@ -4875,9 +4938,8 @@ class DBManager:
                         'amount': row[7],
                         'status': row[8],
                         'cookie_id': row[9],
-                        'is_bargain': bool(row[10]) if row[10] is not None else False,
-                        'created_at': row[11],
-                        'updated_at': row[12]
+                        'created_at': row[10],
+                        'updated_at': row[11]
                     })
 
                 logger.info(f"查询到 {len(orders)} 个待发货订单" + (f" (账号: {cookie_id})" if cookie_id else ""))

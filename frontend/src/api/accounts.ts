@@ -151,9 +151,6 @@ export interface AIReplySettings {
   model_name?: string
   api_key?: string
   base_url?: string
-  max_discount_percent?: number
-  max_discount_amount?: number
-  max_bargain_rounds?: number
   custom_prompts?: string
   // 兼容旧字段（前端内部使用）
   enabled?: boolean
@@ -172,9 +169,6 @@ export const updateAIReplySettings = (cookieId: string, settings: Partial<AIRepl
     model_name: settings.model_name ?? 'qwen-plus',
     api_key: settings.api_key ?? '',
     base_url: settings.base_url ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    max_discount_percent: settings.max_discount_percent ?? 10,
-    max_discount_amount: settings.max_discount_amount ?? 100,
-    max_bargain_rounds: settings.max_bargain_rounds ?? 3,
     custom_prompts: settings.custom_prompts ?? '',
   }
   return put(`/ai-reply-settings/${cookieId}`, payload)

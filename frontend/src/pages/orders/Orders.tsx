@@ -257,7 +257,6 @@ export function Orders() {
                 <th>数量</th>
                 <th>金额</th>
                 <th>状态</th>
-                <th>小刀</th>
                 <th>账号ID</th>
                 <th>创建时间</th>
                 <th>操作</th>
@@ -266,7 +265,7 @@ export function Orders() {
             <tbody>
               {filteredOrders.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="text-center py-8 text-gray-500">
+                  <td colSpan={9} className="text-center py-8 text-gray-500">
                     <div className="flex flex-col items-center gap-2">
                       <ShoppingCart className="w-12 h-12 text-gray-300" />
                       <p>暂无订单数据</p>
@@ -285,13 +284,6 @@ export function Orders() {
                       <td className="text-amber-600 font-medium">¥{order.amount}</td>
                       <td>
                         <span className={status.class}>{status.label}</span>
-                      </td>
-                      <td>
-                        {order.is_bargain ? (
-                          <span className="badge-warning">是</span>
-                        ) : (
-                          <span className="badge-gray">否</span>
-                        )}
                       </td>
                       <td className="font-medium text-blue-600 dark:text-blue-400">{order.cookie_id}</td>
                       <td className="text-sm text-gray-500">
@@ -425,14 +417,6 @@ export function Orders() {
                         <span className={statusMap[orderDetail.status]?.class || 'badge-gray'}>
                           {statusMap[orderDetail.status]?.label || '未知'}
                         </span>
-                      </div>
-                      <div className="flex justify-between py-1 border-b border-gray-100 dark:border-gray-700">
-                        <span className="text-gray-500">是否小刀</span>
-                        {orderDetail.is_bargain ? (
-                          <span className="badge-warning">是</span>
-                        ) : (
-                          <span className="badge-gray">否</span>
-                        )}
                       </div>
                     </div>
                   </div>
