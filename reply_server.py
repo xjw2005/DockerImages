@@ -4689,6 +4689,54 @@ def get_item_detail(cookie_id: str, item_id: str, current_user: Dict[str, Any] =
         raise HTTPException(status_code=500, detail=f"获取商品详情失败: {str(e)}")
 
 
+class BatchPromptUpdate(BaseModel):
+    items: List[Dict[str, str]]  # [{"cookie_id": "xxx", "item_id": "yyy"}, ...]
+    custom_prompt: str
+
+
+@app.put("/items/batch/custom-prompt")
+def batch_update_item_custom_prompts(
+    update_data: BatchPromptUpdate,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """批量更新商品的自定义提示词"""
+    try:
+        logger.info(f"批量更新提示词请求数据: {update_data}")
+        user_id = current_user['user_id']
+        from db_manager import db_manager
+        user_cookies = db_manager.get_all_cookies(user_id)
+
+        # 验证所有商品都属于当前用户
+        for item in update_data.items:
+            cookie_id = item.get('cookie_id')
+            if cookie_id not in user_cookies:
+                raise HTTPException(status_code=403, detail=f"无权限操作Cookie: {cookie_id}")
+
+        # 构建批量更新数据
+        items_data = []
+        for item in update_data.items:
+            items_data.append({
+                'cookie_id': item['cookie_id'],
+                'item_id': item['item_id'],
+                'custom_prompt': update_data.custom_prompt
+            })
+
+        # 执行批量更新
+        result = db_manager.batch_update_item_custom_prompts(items_data)
+
+        return {
+            "message": f"批量更新完成，成功 {result['success_count']} 个，失败 {result['failed_count']} 个",
+            "success_count": result['success_count'],
+            "failed_count": result['failed_count'],
+            "failed_items": result['failed_items']
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"批量更新商品提示词失败: {str(e)}")
+
+
 class ItemDetailUpdate(BaseModel):
     item_detail: str
     custom_prompt: Optional[str] = None

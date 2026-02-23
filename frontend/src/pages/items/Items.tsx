@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { CheckSquare, Download, Edit2, ExternalLink, Loader2, Package, RefreshCw, Search, Square, Trash2, X } from 'lucide-react'
-import { batchDeleteItems, deleteItem, fetchAllItemsFromAccount, getItems, updateItem, updateItemMultiQuantityDelivery, updateItemMultiSpec, getItemCustomPrompt } from '@/api/items'
+import { CheckSquare, Download, Edit2, ExternalLink, Loader2, Package, RefreshCw, Search, Square, Trash2, X, MessageSquare } from 'lucide-react'
+import { batchDeleteItems, deleteItem, fetchAllItemsFromAccount, getItems, updateItem, updateItemMultiQuantityDelivery, updateItemMultiSpec, getItemCustomPrompt, batchUpdateItemCustomPrompts } from '@/api/items'
 import { getAccounts } from '@/api/accounts'
 import { useUIStore } from '@/store/uiStore'
 import { PageLoading } from '@/components/common/Loading'
@@ -24,6 +24,11 @@ export function Items() {
   const [editDetail, setEditDetail] = useState('')
   const [editCustomPrompt, setEditCustomPrompt] = useState('')
   const [editSaving, setEditSaving] = useState(false)
+
+  // 批量提示词弹窗状态
+  const [showBatchPromptModal, setShowBatchPromptModal] = useState(false)
+  const [batchPrompt, setBatchPrompt] = useState('')
+  const [batchPromptSaving, setBatchPromptSaving] = useState(false)
 
   const loadItems = async () => {
     if (!_hasHydrated || !isAuthenticated || !token) {
@@ -144,6 +149,69 @@ export function Items() {
     }
   }
 
+  // 批量设置提示词
+  const handleBatchSetPrompt = () => {
+    if (selectedIds.size === 0) {
+      addToast({ type: 'warning', message: '请先选择要设置提示词的商品' })
+      return
+    }
+    setShowBatchPromptModal(true)
+    setBatchPrompt('')
+  }
+
+  // 保存批量提示词
+  const handleSaveBatchPrompt = async () => {
+    if (selectedIds.size === 0) return
+    setBatchPromptSaving(true)
+    try {
+      // 将选中的 ID 转换为 { cookie_id, item_id } 格式
+      const itemsToUpdate = items
+        .filter((item) => selectedIds.has(item.id))
+        .map((item) => ({
+          cookie_id: String(item.cookie_id || ''),
+          item_id: String(item.item_id || '')
+        }))
+        .filter((item) => item.cookie_id && item.item_id) // 过滤掉空值
+
+      console.log('批量更新数据:', {
+        items: itemsToUpdate,
+        custom_prompt: batchPrompt,
+        itemsToUpdate_length: itemsToUpdate.length,
+        batchPrompt_type: typeof batchPrompt,
+        batchPrompt_length: batchPrompt.length
+      })
+
+      if (itemsToUpdate.length === 0) {
+        addToast({ type: 'warning', message: '没有有效的商品数据可以更新' })
+        return
+      }
+
+      const result = await batchUpdateItemCustomPrompts(itemsToUpdate, batchPrompt)
+      addToast({
+        type: 'success',
+        message: `批量设置完成，成功 ${(result as any).success_count} 个，失败 ${(result as any).failed_count} 个`
+      })
+      setShowBatchPromptModal(false)
+      setSelectedIds(new Set())
+      loadItems()
+    } catch (error: any) {
+      console.error('批量设置提示词失败:', error)
+      let errorMessage = '批量设置提示词失败'
+
+      if (error?.response?.data?.detail) {
+        errorMessage = typeof error.response.data.detail === 'string'
+          ? error.response.data.detail
+          : JSON.stringify(error.response.data.detail)
+      } else if (error?.message) {
+        errorMessage = error.message
+      }
+
+      addToast({ type: 'error', message: errorMessage })
+    } finally {
+      setBatchPromptSaving(false)
+    }
+  }
+
   // 切换多数量发货状态
   const handleToggleMultiQuantity = async (item: Item) => {
     try {
@@ -227,10 +295,16 @@ export function Items() {
         </div>
         <div className="flex flex-wrap gap-2">
           {selectedIds.size > 0 && (
-            <button onClick={handleBatchDelete} className="btn-ios-danger">
-              <Trash2 className="w-4 h-4" />
-              删除选中 ({selectedIds.size})
-            </button>
+            <>
+              <button onClick={handleBatchSetPrompt} className="btn-ios-secondary">
+                <MessageSquare className="w-4 h-4" />
+                批量设置提示词 ({selectedIds.size})
+              </button>
+              <button onClick={handleBatchDelete} className="btn-ios-danger">
+                <Trash2 className="w-4 h-4" />
+                删除选中 ({selectedIds.size})
+              </button>
+            </>
           )}
           <button
             onClick={handleFetchItems}
@@ -511,6 +585,61 @@ export function Items() {
                   </span>
                 ) : (
                   '保存'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 批量设置提示词弹窗 */}
+      {showBatchPromptModal && (
+        <div className="modal-overlay">
+          <div className="modal-content max-w-lg">
+            <div className="modal-header">
+              <h2 className="modal-title">批量设置提示词</h2>
+              <button onClick={() => setShowBatchPromptModal(false)} className="modal-close">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="modal-body space-y-4">
+              <div className="text-sm text-gray-600 dark:text-gray-400">
+                将为选中的 {selectedIds.size} 个商品设置相同的自定义提示词
+              </div>
+              <div className="input-group">
+                <label className="input-label">
+                  自定义提示词
+                  <span className="text-xs text-gray-500 ml-2">（将应用到所有选中的商品）</span>
+                </label>
+                <textarea
+                  value={batchPrompt}
+                  onChange={(e) => setBatchPrompt(e.target.value)}
+                  className="input-ios h-32 resize-none"
+                  placeholder="输入要批量设置的提示词，如：这是网盘类商品，指导用户保存到网盘观看..."
+                />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                onClick={() => setShowBatchPromptModal(false)}
+                className="btn-ios-secondary"
+                disabled={batchPromptSaving}
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSaveBatchPrompt}
+                className="btn-ios-primary"
+                disabled={batchPromptSaving}
+              >
+                {batchPromptSaving ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    设置中...
+                  </span>
+                ) : (
+                  `设置 ${selectedIds.size} 个商品`
                 )}
               </button>
             </div>
