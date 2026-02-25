@@ -1230,24 +1230,31 @@ class XianyuSliderStealth:
             return t
     
     def _generate_physics_trajectory(self, distance: float, attempt: int = 1):
-        """基于物理模型生成更稳健的滑动轨迹。"""
+        """基于物理模型生成更稳健的滑动轨迹（增强版 - 正弦波手抖 + 多种缓动函数）。"""
         trajectory = []
 
+        # 🔥 关键改进：根据尝试次数选择不同的缓动函数和策略
         if attempt == 1:
             overshoot_min, overshoot_max = 0.995, 1.015
             strategy_name = "标准轨迹"
             current_strategy = "default"
+            easing_mode = "easeInOutCubic"  # 两头慢中间快（标准）
+            shake_intensity = 1.0  # 标准抖动强度
         elif attempt == 2:
             overshoot_min, overshoot_max = 1.005, 1.03
             strategy_name = "轻微超调"
             current_strategy = "cautious"
+            easing_mode = "easeOutBack"  # 带回弹效果（谨慎）
+            shake_intensity = 1.2  # 增加抖动强度
         else:
             overshoot_min, overshoot_max = 0.985, 1.01
             strategy_name = "轻微欠调"
             current_strategy = "slow"
+            easing_mode = "easeOutQuad"  # 快速启动慢速结束（快速）
+            shake_intensity = 0.8  # 减少抖动强度
 
         target_distance = distance * random.uniform(overshoot_min, overshoot_max)
-        logger.info(f"【{self.pure_user_id}】🎯 第{attempt}次：{strategy_name}")
+        logger.info(f"【{self.pure_user_id}】🎯 第{attempt}次：{strategy_name}（正弦波手抖 + {easing_mode}）")
 
         # 使用真实人类参数（基于优化后的trajectory_params）
         if attempt == 1:
@@ -1266,16 +1273,49 @@ class XianyuSliderStealth:
         last_x = 0.0
         for i in range(steps):
             progress = (i + 1) / steps
-            eased = self._easing_function(progress, mode='easeInOutCubic')
+            # 🔥 关键改进：使用动态选择的缓动函数
+            eased = self._easing_function(progress, mode=easing_mode)
             x = target_distance * eased + random.uniform(-0.6, 0.6)
             if x < last_x + 0.2:
                 x = last_x + 0.2
-            y = random.uniform(-1.2, 1.2)
+            
+            # 🔥 关键改进：使用正弦波模拟真实手抖（替代简单随机）
+            # 双频正弦波叠加：低频模拟手臂摆动，高频模拟手指颤抖
+            # 根据策略调整抖动强度
+            y = (math.sin(progress * math.pi * 3) * random.uniform(0, 1.5 * shake_intensity) + 
+                 math.sin(progress * math.pi * 7) * random.uniform(0, 0.5 * shake_intensity))
+            
+            # 可选：添加水平微扰（15%概率），模拟微小的进退或停顿
+            if random.random() < 0.15:
+                x += random.uniform(-2, 2)
+                if x < last_x:  # 确保不回退
+                    x = last_x + 0.1
+            
             delay = base_delay * random.uniform(0.85, 1.25)
             trajectory.append((x, y, delay))
             last_x = x
 
-        logger.info(f"【{self.pure_user_id}】稳健模式：{len(trajectory)}步，策略={strategy_name}")
+        # 🔥 关键改进：添加末端修正阶段（模拟对齐过程）
+        correction_steps = random.randint(5, 12)
+        current_x = last_x
+        
+        logger.debug(f"【{self.pure_user_id}】添加末端修正：{correction_steps}步")
+        
+        for i in range(correction_steps):
+            # 每次移动剩余距离的一小部分，逐渐逼近目标
+            remain = target_distance - current_x
+            move = remain * random.uniform(0.1, 0.4)
+            
+            # 最后几步如果距离很小，直接完成
+            if abs(remain) < 1.0 and i > correction_steps / 2:
+                move = remain
+            
+            current_x += move
+            y = random.uniform(-0.5, 0.5)  # 修正阶段使用小幅度抖动
+            delay = random.uniform(0.03, 0.08)  # 修正阶段较慢
+            trajectory.append((current_x, y, delay))
+
+        logger.info(f"【{self.pure_user_id}】稳健模式+正弦波手抖：{len(trajectory)}步（含{correction_steps}步修正），策略={strategy_name}，缓动={easing_mode}，抖动强度={shake_intensity}")
         return trajectory, current_strategy
     
     def generate_human_trajectory(self, distance: float, attempt: int = 1):

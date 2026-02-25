@@ -545,9 +545,12 @@ class XianyuLive:
 
         返回:
             int: 本次成功回收的僵尸进程数量
+        
+        注意:
+            此功能仅在 Unix/Linux 系统上有效，Windows 系统会直接返回 0
         """
-        # 仅在支持 os.waitpid 的平台执行
-        if not hasattr(os, "waitpid"):
+        # 仅在支持 os.waitpid 和 os.WNOHANG 的平台执行（Unix/Linux）
+        if not hasattr(os, "waitpid") or not hasattr(os, "WNOHANG"):
             return 0
 
         reaped = 0
@@ -1878,7 +1881,7 @@ class XianyuLive:
                     # user_id=f"{self.cookie_id}_{int(time.time() * 1000)}",  # 使用唯一ID避免冲突
                     user_id=f"{self.cookie_id}",  # 使用唯一ID避免冲突
                     enable_learning=True,  # 启用学习功能
-                    headless=True  # 可视化模式，便于观察滑块验证过程(总开关)
+                    headless=False  # 可视化模式，便于观察滑块验证过程(总开关)
                 )
 
                 # 在线程池中执行滑块验证
@@ -2238,7 +2241,7 @@ class XianyuLive:
             password = account_info.get('password', '')
             # show_browser = account_info.get('show_browser', False)  # 如果需要显示浏览器，请取消注释这行并确保在配置文件中正确设置
             # 显示浏览器（设置。headless设置>>>密码登录刷新 Cookie”流程的开关）
-            show_browser = False
+            show_browser = True
             
             # 检查是否配置了用户名和密码
             if not username or not password:
